@@ -1,0 +1,13 @@
+diff --git a/applets/install.sh b/applets/install.sh
+index 4158968..9c57c4e 100755
+--- a/applets/install.sh
++++ b/applets/install.sh
+@@ -115,7 +115,7 @@ for i in $h; do
+ 				bb_path="bin/busybox"
+ 			;;
+ 			/bin)
+-				bb_path="busybox"
++				bb_path="../bin/busybox"
+ 			;;
+ 			/sbin)
+ 				bb_path="../bin/busybox"

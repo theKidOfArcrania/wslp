@@ -1,0 +1,6 @@
+/disk
+/containerd/containerd
+/disk.img
+*.o
+*.d
+*.sw?
