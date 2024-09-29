@@ -1,0 +1,26 @@
+[package]
+name = "powershell_script"
+version = "1.1.0"
+authors = ["Carl Fredrik Samson <cf@samson.no>"]
+edition = "2018"
+repository = "https://github.com/cfsamson/powershell-script"
+documentation = "https://docs.rs/powershell_script/"
+readme = "README.md"
+license = "MIT"
+keywords = ["powershell", "script", "scripting", "ps"]
+categories = ["command-line-utilities"]
+description = """
+A library for running Windows PowerShell scripts
+"""
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+
+# Use PowerShell Core instead of Windows Powershell.
+core = []
+
+[dependencies]
+async-tempfile = "0.6.0"
+log = "0.4.22"
+tokio = { version = "1.38.1", features = ["full"] }
