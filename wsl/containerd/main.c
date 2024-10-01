@@ -404,7 +404,7 @@ int main(int argc, char **argv) {
   CHK(setresuid, 0, 0, 1);
   CHK(prctl, PR_SET_DUMPABLE, 1); // Since we need to access our own procfs
 
-  puts("An old namespace challenge (revised) by popular depand!");
+  puts("An old namespace challenge (revised) by popular demand!");
   for(;;) {
     printf("What would you like to do?\n"
         "1) Start Sandbox\n"
