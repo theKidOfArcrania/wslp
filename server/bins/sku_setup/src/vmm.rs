@@ -74,7 +74,7 @@ pub struct VmBuilder {
 
 impl VmBuilder {
     pub fn backing_path(mut self, path: String) -> Self {
-        self.path = Some(path);
+        self.backing_path = Some(path);
         self
     }
 

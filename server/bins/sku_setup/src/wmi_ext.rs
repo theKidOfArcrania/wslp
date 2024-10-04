@@ -57,7 +57,7 @@ trait IWbemClassExt {
         conn: &wmi::WMIConnection,
         name: &str,
         args: &HashMap<String, wmi::Variant>,
-        outargs: &[&str; OUTARGS], 
+        outargs: &[&str; OUTARGS],
     ) -> wmi::WMIResult<(wmi::Variant, [wmi::Variant; OUTARGS])>;
 }
 
@@ -67,7 +67,7 @@ impl IWbemClassExt for IWbemClassWrapper {
         conn: &wmi::WMIConnection,
         method: &str,
         args: &HashMap<String, wmi::Variant>,
-        outargs: &[&str; OUTARGS], 
+        outargs: &[&str; OUTARGS],
     ) -> wmi::WMIResult<(wmi::Variant, [wmi::Variant; OUTARGS])> {
         let mut input = None;
         let path = self.path()?;
@@ -231,7 +231,11 @@ pub struct VirtualSystemManagementService {
 
 impl VirtualSystemManagementService {
     pub fn singleton() -> wmi::WMIResult<Self> {
-        get_connection()?.get()
+        get_connection()?
+            .exec_query_native_wrapper("select * from Msvm_VirtualSystemManagementService")?
+            .next()
+            .ok_or_else(|| wmi::WMIError::ResultEmpty)??
+            .into_desr()
     }
 
     fn raw(&self) -> anyhow::Result<IWbemClassWrapper> {

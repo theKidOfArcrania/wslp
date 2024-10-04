@@ -409,7 +409,7 @@ async fn partition_vm(
             let created_key = created_key.clone();
             async move {
                 if !is_success {
-                    log::info!("{name}: Performing cleanup for VM...");
+                    log::warn!("{name}: Performing cleanup for VM due to error...");
                     let res = if let Some(key) = &*created_key.lock().await {
                         log::info!("{name}: ...by unregistering VM");
                         VM_SESS_MGR.unregister(key).await
