@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, mem::transmute, rc::Rc};
 
+use anyhow::bail;
 use serde::Deserialize;
 use windows::{core::{w, IUnknown, BSTR, HSTRING, VARIANT}, Win32::System::{Variant as var, Wmi::IWbemClassObject}};
 use wmi::{result_enumerator::IWbemClassWrapper, variant::IUnknownWrapper};
@@ -51,21 +52,23 @@ unsafe fn to_variant(variant: &wmi::Variant) -> VARIANT {
 }
 
 trait IWbemClassExt {
-    fn invoke_inst_method_raw(
+    fn invoke_inst_method_raw<const OUTARGS: usize>(
         &self,
         conn: &wmi::WMIConnection,
         name: &str,
         args: &HashMap<String, wmi::Variant>,
-    ) -> wmi::WMIResult<wmi::Variant>;
+        outargs: &[&str; OUTARGS], 
+    ) -> wmi::WMIResult<(wmi::Variant, [wmi::Variant; OUTARGS])>;
 }
 
 impl IWbemClassExt for IWbemClassWrapper {
-    fn invoke_inst_method_raw(
+    fn invoke_inst_method_raw<const OUTARGS: usize>(
         &self,
         conn: &wmi::WMIConnection,
         method: &str,
         args: &HashMap<String, wmi::Variant>,
-    ) -> wmi::WMIResult<wmi::Variant> {
+        outargs: &[&str; OUTARGS], 
+    ) -> wmi::WMIResult<(wmi::Variant, [wmi::Variant; OUTARGS])> {
         let mut input = None;
         let path = self.path()?;
         let class = self.class()?;
@@ -80,7 +83,7 @@ impl IWbemClassExt for IWbemClassWrapper {
             )?;
             let classobj = classobj.unwrap();
             classobj.GetMethod(
-                &HSTRING::from(method),
+                &BSTR::from(method),
                 0,
                 &mut input,
                 std::ptr::null_mut(),
@@ -125,7 +128,20 @@ impl IWbemClassExt for IWbemClassWrapper {
             let output = output.unwrap();
             let mut value = VARIANT::default();
             output.Get(w!("ReturnValue"), 0, &mut value, None, None)?;
-            wmi::Variant::from_variant(&value)
+            let ret = wmi::Variant::from_variant(&value)?;
+
+            let out = outargs.try_map(|outarg| {
+                output.Get(
+                    &BSTR::from(outarg),
+                    0,
+                    &mut value,
+                    None,
+                    None,
+                )?;
+                wmi::Variant::from_variant(&value)
+            })?;
+
+            Ok((ret, out))
         }
     }
 }
@@ -173,8 +189,92 @@ pub struct ComputerSystem {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(rename = "Msvm_VirtualSystemSettingData")]
+pub struct VirtualSystemSettingData {
+    #[serde(skip)]
+    raw: RefCell<Option<IWbemClassWrapper>>,
+    #[serde(rename = "__Path")]
+    pub wmi_path: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename = "Msvm_SettingsDefineState")]
+pub struct SettingsDefineState {}
+
+impl VirtualSystemSettingData {
+    pub fn new(wmi_path: String) -> Self {
+        Self {
+            raw: Default::default(),
+            wmi_path
+        }
+    }
+
+    fn raw(&self) -> anyhow::Result<IWbemClassWrapper> {
+        if let Some(raw) = (*self.raw.borrow()).clone() {
+            return Ok(raw.clone());
+        }
+
+        let raw = get_connection()?.get_raw_by_path(&self.wmi_path)?;
+        *self.raw.borrow_mut() = Some(raw.clone());
+        Ok(raw)
+    }
+}
+
+#[derive(Deserialize, Debug)]
 #[serde(rename = "Msvm_VirtualSystemManagementService")]
 pub struct VirtualSystemManagementService {
+    #[serde(skip)]
+    raw: RefCell<Option<IWbemClassWrapper>>,
+    #[serde(rename = "__Path")]
+    wmi_path: String,
+}
+
+impl VirtualSystemManagementService {
+    pub fn singleton() -> wmi::WMIResult<Self> {
+        get_connection()?.get()
+    }
+
+    fn raw(&self) -> anyhow::Result<IWbemClassWrapper> {
+        if let Some(raw) = (*self.raw.borrow()).clone() {
+            return Ok(raw.clone());
+        }
+
+        let raw = get_connection()?.get_raw_by_path(&self.wmi_path)?;
+        *self.raw.borrow_mut() = Some(raw.clone());
+        Ok(raw)
+    }
+
+    pub fn get_virtual_system_thumbnail_image(
+        &self,
+        target: &VirtualSystemSettingData,
+        width: i16,
+        height: i16,
+    ) -> anyhow::Result<Vec<u8>> {
+        let conn = get_connection()?;
+        let raw = self.raw()?;
+        let mut args = HashMap::new();
+        args.insert("VirtualSystemSettingData".into(), wmi::Variant::Object(target.raw()?));
+        args.insert("WidthPixels".into(), wmi::Variant::I2(width));
+        args.insert("HeightPixels".into(), wmi::Variant::I2(height));
+        let (_, [image_data]) = raw.invoke_inst_method_raw(
+            &*conn,
+            "GetVirtualSystemThumbnailImage",
+            &args,
+            &["ImageData"],
+        )?;
+
+        let mut ret;
+        match image_data {
+            wmi::Variant::Array(vals) => {
+                ret = Vec::with_capacity(vals.len());
+                for val in vals {
+                    ret.push(val.try_into()?);
+                }
+            }
+            _ => bail!("Expected a byte array"),
+        }
+        Ok(ret)
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -188,7 +288,8 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
-    fn raw(&self, conn: &wmi::WMIConnection) -> anyhow::Result<IWbemClassWrapper> {
+    fn raw(&self) -> anyhow::Result<IWbemClassWrapper> {
+        let conn = get_connection()?;
         if let Some(raw) = (*self.raw.borrow()).clone() {
             return Ok(raw.clone());
         }
@@ -198,34 +299,38 @@ impl Keyboard {
         Ok(raw)
     }
 
-    pub fn type_ctrl_alt_del(&self, conn: &wmi::WMIConnection) -> anyhow::Result<i32> {
-        let raw = self.raw(conn)?;
+    pub fn type_ctrl_alt_del(&self) -> anyhow::Result<i32> {
+        let conn = get_connection()?;
+        let raw = self.raw()?;
         let args = HashMap::new();
-        let res = raw.invoke_inst_method_raw(conn, "TypeCtrlAltDel", &args)?;
+        let (res, _) = raw.invoke_inst_method_raw(&*conn, "TypeCtrlAltDel", &args, &[])?;
         Ok(res.try_into()?)
     }
 
-    pub fn press_key(&self, conn: &wmi::WMIConnection, keycode: u32) -> anyhow::Result<i32> {
-        let raw = self.raw(conn)?;
+    pub fn press_key(&self, keycode: u32) -> anyhow::Result<i32> {
+        let conn = get_connection()?;
+        let raw = self.raw()?;
         let mut args = HashMap::new();
         args.insert("keyCode".into(), wmi::Variant::I4(keycode as i32));
-        let res = raw.invoke_inst_method_raw(conn, "PressKey", &args)?;
+        let (res, _) = raw.invoke_inst_method_raw(&*conn, "PressKey", &args, &[])?;
         Ok(res.try_into()?)
     }
 
-    pub fn type_key(&self, conn: &wmi::WMIConnection, keycode: u32) -> anyhow::Result<i32> {
-        let raw = self.raw(conn)?;
+    pub fn type_key(&self, keycode: u32) -> anyhow::Result<i32> {
+        let conn = get_connection()?;
+        let raw = self.raw()?;
         let mut args = HashMap::new();
         args.insert("keyCode".into(), wmi::Variant::I4(keycode as i32));
-        let res = raw.invoke_inst_method_raw(conn, "TypeKey", &args)?;
+        let (res, _) = raw.invoke_inst_method_raw(&*conn, "TypeKey", &args, &[])?;
         Ok(res.try_into()?)
     }
 
-    pub fn type_text(&self, conn: &wmi::WMIConnection, text: String) -> anyhow::Result<i32> {
-        let raw = self.raw(conn)?;
+    pub fn type_text(&self, text: String) -> anyhow::Result<i32> {
+        let conn = get_connection()?;
+        let raw = self.raw()?;
         let mut args = HashMap::new();
         args.insert("asciiText".into(), wmi::Variant::String(text));
-        let res = raw.invoke_inst_method_raw(conn, "TypeText", &args)?;
+        let (res, _) = raw.invoke_inst_method_raw(&*conn, "TypeText", &args, &[])?;
         Ok(res.try_into()?)
     }
 }

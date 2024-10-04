@@ -129,6 +129,7 @@ impl VmBuilder {
     pub async fn build(self) -> anyhow::Result<Vm> {
         let mut args = Vec::new();
         let name = self.name.unwrap_or_else(|| "New Virtual Machine".into());
+        let backing_path = self.backing_path.ok_or_else(|| anyhow::anyhow!("Must have a backing path"))?;
 
         args.push("-Name".into());
         args.push(name.clone());
@@ -162,12 +163,12 @@ impl VmBuilder {
             args.push(memory_startup_bytes);
         }
 
-        Vm::new(self.backing_path, name, args).await
+        Vm::new(backing_path, name, args).await
     }
 }
 
 pub struct Vm {
-    backing_path: Option<String>,
+    backing_path: String,
     vm_wmi_path: OnceLock<String>,
     ps: PsScript,
     name: String,
@@ -222,7 +223,7 @@ pub(crate) async fn run_cmd(ps: &PsScript, cmd: &str, args: Vec<String>) -> anyh
 
 impl Vm {
     pub async fn new(
-        backing_path: Option<String>,
+        backing_path: String,
         name: String,
         args: Vec<String>,
     ) -> anyhow::Result<Self> {
@@ -263,11 +264,25 @@ impl Vm {
             .map(|s| s.as_str())
     }
 
+    pub fn get_vssd(&self) -> anyhow::Result<Option<wmi_ext::VirtualSystemSettingData>> {
+        let path = self.get_wmi_path()?;
+        let conn = wmi_ext::get_connection()?;
+        Ok(
+            conn.associators::<_, wmi_ext::SettingsDefineState>(path)?
+                .into_iter()
+                .next()
+        )
+    }
+
+    pub fn try_get_vssd(&self) -> anyhow::Result<wmi_ext::VirtualSystemSettingData> {
+        self.get_vssd()?.ok_or_else(|| wmi::WMIError::ResultEmpty.into())
+    }
+
     pub fn get_keyboard(&self) -> anyhow::Result<Option<wmi_ext::Keyboard>> {
         let path = self.get_wmi_path()?;
         let conn = wmi_ext::get_connection()?;
         Ok(
-            conn.associators::<wmi_ext::Keyboard, wmi_ext::SystemDevice>(path)?
+            conn.associators::<_, wmi_ext::SystemDevice>(path)?
                 .into_iter()
                 .next()
         )
@@ -315,11 +330,15 @@ impl Vm {
 
     pub async fn cleanup(self) -> anyhow::Result<()> {
         let res = self.stop().await;
-        // TODO: Delete VM
-        if let Some(path) = self.backing_path {
-            fs::remove_dir_all(path).await?;
-        }
-        res
+        let res2 = run_cmd(
+            &self.ps,
+            "Remove-VM",
+            vec!["-Force".into(), "-VmName".into(), self.name.clone()],
+        ).await.map(|_| ());
+
+        log::info!("Deleting VM files at {}", self.backing_path);
+        fs::remove_dir_all(self.backing_path).await?;
+        res.or(res2)
     }
 
     #[allow(unused)]

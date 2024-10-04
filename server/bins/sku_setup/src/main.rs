@@ -1,16 +1,13 @@
 #![feature(once_cell_try)]
+#![feature(array_try_map)]
+
 use anyhow::anyhow;
+use rand::Rng;
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    env::args,
-    future::Future,
-    net::{IpAddr, SocketAddr},
-    process::exit,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    task::Poll,
+    collections::{BTreeMap, BTreeSet}, env::args, future::Future, mem::swap, net::SocketAddr, process::exit, sync::{
+        atomic::{AtomicBool, Ordering}, Arc, OnceLock
+    }, task::Poll,
+    thread,
 };
 use tokio::{
     fs,
@@ -18,12 +15,16 @@ use tokio::{
     net, signal,
     sync::{Mutex, Notify},
     task::JoinSet,
-    time,
+    time::{self, Instant},
 };
 use vmm::{PSBool, PSState, StartAction, StopAction};
 
 // 20000 diff ~ 8sec
 const DIFFICULTY: u32 = 20;
+
+const HOST_IP: &str = "10.69.0.1";
+const HOST_PORT_MULTIPLEX: u16 = 31337;
+const HOST_PORT_ENTRY: u16 = 20000;
 
 mod instances;
 mod vmm;
@@ -37,6 +38,7 @@ fn hook_interrupt() {
         signal::ctrl_c()
             .await
             .expect("Failed to listen to ctrl+c event");
+
         log::info!("Shuting down server... Ctrl+C again to force shutdown without cleanup");
         INTERRUPTED.store(true, Ordering::Relaxed);
         INTERRUPTED_NOTIFY.notify_waiters();
@@ -62,6 +64,18 @@ pub async fn wait_for_interrupt() {
         waiter.as_mut().await;
         return;
     }
+}
+
+static FLAGS: OnceLock<[String; 2]> = OnceLock::new();
+
+fn get_flags() -> anyhow::Result<[&'static str; 2]> {
+    let [flag1, flag2] = FLAGS.get_or_try_init(|| -> anyhow::Result<_> {
+        let flag1 = std::fs::read_to_string("flag1.txt")?;
+        let flag2 = std::fs::read_to_string("flag2.txt")?;
+        Ok([flag1, flag2])
+    })?;
+
+    Ok([flag1, flag2])
 }
 
 struct RW<R: AsyncBufReadExt, W: AsyncWriteExt> {
@@ -96,18 +110,207 @@ impl<R: AsyncBufReadExt + Unpin, W: AsyncWriteExt + Unpin> RW<R, W> {
         self.recvline().await
     }
 }
-    /*
+
+enum PeerState {
+    Connecting(usize),
+    PartialConnected(net::TcpStream),
+    FullyConnected,
+}
+
+#[derive(Default)]
+struct VmSession {
+    vm: Option<vmm::Vm>,
+    server_peer: Option<net::TcpStream>,
+    peers: Vec<PeerState>,
+}
+
+struct VmSessionsMgr {
+    sessions: Mutex<BTreeMap<u128, VmSession>>,
+    shared: Mutex<BTreeSet<u128>>,
+    peer_notify: Notify,
+}
+
+impl VmSessionsMgr {
+    pub const fn new() -> Self {
+        Self {
+            sessions: Mutex::const_new(BTreeMap::new()),
+            shared: Mutex::const_new(BTreeSet::new()),
+            peer_notify: Notify::const_new(),
+        }
+    }
+
+    pub async fn shared_vms(&self) -> BTreeSet<u128> {
+        self.shared.lock().await.clone()
+    }
+
+    pub async fn register_new(&self, shared: bool) -> u128 {
+        let mut key = rand::random();
+        let mut sessions = self.sessions.lock().await;
+        while sessions.contains_key(&key) {
+            key = rand::random();
+        }
+        sessions.insert(key, VmSession::default());
+        drop(sessions);
+
+        if shared {
+            self.shared.lock().await.insert(key);
+        }
+
+        key
+    }
+
     pub async fn unregister(&self, key: &u128) -> anyhow::Result<()> {
         let sess = self.sessions.lock().await.remove(&key);
         if let Some(vm) = sess.and_then(|sess| sess.vm) {
             vm.cleanup().await?;
+        } else {
+            log::warn!("VM 0x{key:032x} does not have associated initialized VM with it");
         }
 
         self.shared.lock().await.remove(&key);
         Ok(())
     }
-    */
 
+    pub async fn associate_vm(&self, key: &u128, vm: vmm::Vm) {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(sess) = sessions.get_mut(&key) {
+            // Only change VM if it isn't already written to.
+            if sess.vm.is_none() {
+                sess.vm = Some(vm);
+            }
+        }
+    }
+
+    pub async fn connect_server_peer(&self, key: &u128) -> anyhow::Result<()> {
+        let mpa = self.open_peer(key).await?;
+
+        let mut sessions = self.sessions.lock().await;
+        let Some(sess) = sessions.get_mut(&key) else {
+            anyhow::bail!("VM 0x{key:032x} does not exist");
+        };
+
+        let Some(vm) = &sess.vm else {
+            anyhow::bail!("VM 0x{key:032x} has not been initialized");
+        };
+
+        let vm = vm.clone();
+        tokio::spawn(async move {
+            spawn_server(&vm, &mpa)
+        }).await??;
+        drop(sessions);
+
+        let client = self.wait_for_peer(key, mpa.port).await?;
+
+        self.sessions
+            .lock()
+            .await
+            .get_mut(&key)
+            .expect("Should exist")
+            .server_peer = Some(client);
+
+        Ok(())
+    }
+
+    pub async fn connect_client_peer(&self, key: &u128) -> anyhow::Result<net::TcpStream> {
+        let mpa = self.open_peer(key).await?;
+
+        let mut sessions = self.sessions.lock().await;
+        let Some(sess) = sessions.get_mut(&key) else {
+            anyhow::bail!("VM 0x{key:032x} does not exist");
+        };
+
+        let Some(server) = &mut sess.server_peer else {
+            anyhow::bail!("VM 0x{key:032x} server peer has not been initialized")
+        };
+
+        server.write_all(mpa.bash_string().as_bytes()).await?;
+        server.write_u8(b'\n').await?;
+        server.flush().await?;
+
+        self.wait_for_peer(key, mpa.port).await
+    }
+
+    pub async fn open_peer(&self, key: &u128) -> anyhow::Result<MultiplexAddr> {
+        let mut sessions = self.sessions.lock().await;
+        let Some(sess) = sessions.get_mut(&key) else {
+            anyhow::bail!("VM 0x{key:032x} does not exist");
+        };
+
+        let mut rng = rand::thread_rng();
+        let port_key = rng.gen();
+        sess.peers.push(PeerState::Connecting(port_key));
+        Ok(MultiplexAddr {
+            key: *key,
+            port: sess.peers.len() - 1,
+            port_key,
+        })
+    }
+
+    pub async fn connect_peer(
+        &self,
+        conn: &MultiplexAddr,
+        peer_stream: &mut Option<net::TcpStream>,
+    ) -> anyhow::Result<()> {
+        let mut sessions = self.sessions.lock().await;
+        let Some(sess) = sessions.get_mut(&conn.key) else {
+            anyhow::bail!("VM 0x{:032x} does not exist", conn.key);
+        };
+
+        let Some(peer) = sess.peers.get_mut(conn.port).filter(|peer| match peer {
+            PeerState::Connecting(port_key) => conn.port_key == *port_key,
+            _ => false,
+        }) else {
+            anyhow::bail!(
+                "Invalid port {:032x}:{}:{:016x}",
+                conn.key,
+                conn.port,
+                conn.port_key
+            );
+        };
+
+        *peer = PeerState::PartialConnected(peer_stream.take().expect("Should not be empty"));
+        self.peer_notify.notify_waiters();
+
+        Ok(())
+    }
+
+    pub async fn wait_for_peer(&self, key: &u128, port: usize) -> anyhow::Result<net::TcpStream> {
+        loop {
+            let mut sessions = self.sessions.lock().await;
+            let Some(sess) = sessions.get_mut(&key) else {
+                anyhow::bail!("VM 0x{key:032x} does not exist");
+            };
+
+            let Some(peer) = sess.peers.get_mut(port) else {
+                anyhow::bail!("Invalid port {key:032x}:{port}");
+            };
+
+            let mut cur_peer = PeerState::FullyConnected;
+            swap(peer, &mut cur_peer);
+
+            match cur_peer {
+                PeerState::Connecting(client) => {
+                    *peer = PeerState::Connecting(client);
+                }
+                PeerState::PartialConnected(stream) => {
+                    return Ok(stream);
+                }
+                PeerState::FullyConnected => {
+                    anyhow::bail!("Peer port {key:032x}:{port} is already fully connected!");
+                }
+            }
+
+            let waiter = self.peer_notify.notified();
+            tokio::pin!(waiter);
+            waiter.as_mut().enable();
+            drop(sessions);
+
+            waiter.await;
+        }
+    }
+}
+
+static VM_SESS_MGR: VmSessionsMgr = VmSessionsMgr::new();
 
 trait FutureExt<T> {
     async fn interruptable(
@@ -115,6 +318,8 @@ trait FutureExt<T> {
         ctx: &(dyn std::fmt::Display + Sync),
         action: &str,
     ) -> anyhow::Result<T>;
+
+    async fn timed(self, timeout: Instant) -> Option<T>;
 }
 
 impl<T, F: Future<Output = T>> FutureExt<T> for F {
@@ -130,19 +335,26 @@ impl<T, F: Future<Output = T>> FutureExt<T> for F {
             }
         }
     }
+
+    async fn timed(self, timeout: Instant) -> Option<T> {
+        tokio::select! {
+            res = self => { Some(res) }
+            _ = time::sleep_until(timeout) => None
+        }
+    }
 }
 
 async fn partition_vm(
     name: String,
     vhd_src: &str,
     shared: bool,
-) -> anyhow::Result<vmm::Vm> {
+) -> anyhow::Result<(u128, vmm::Vm)> {
     if !vhd_src.ends_with(".vhdx") {
         anyhow::bail!("VHD should end in .vhdx");
     }
     let vhd_path = format!("{name}/disk.vhdx");
 
-    let created_vm = Arc::new(Mutex::new(None));
+    let created_key = Arc::new(Mutex::new(None));
     try_finally(
         async {
             log::info!("{name}: Copying base files");
@@ -151,6 +363,12 @@ async fn partition_vm(
             if interrupted() {
                 anyhow::bail!("{name}: Interrupted while copying files!");
             }
+
+            log::info!("{name}: Registering VM");
+            let key = VM_SESS_MGR.register_new(shared).await;
+            log::info!("{name}: VM {name} -> 0x{key:032x}");
+
+            *created_key.lock().await = Some(key);
 
             log::info!("{name}: Creating VM...");
             let vm = vmm::VmBuilder::default()
@@ -165,7 +383,7 @@ async fn partition_vm(
                 .interruptable(&name, "creating VM")
                 .await??;
 
-            *created_vm.lock().await = Some(vm.clone());
+            VM_SESS_MGR.associate_vm(&key, vm.clone()).await;
 
             log::info!("{name}: Configuring VM...");
             vm.set_bundled()
@@ -184,17 +402,17 @@ async fn partition_vm(
                 .await??;
 
             log::info!("{name}: Configuration completed!");
-            Ok(vm)
+            Ok((key, vm))
         },
         |is_success| {
             let name = name.clone();
-            let created_vm = created_vm.clone();
+            let created_key = created_key.clone();
             async move {
                 if !is_success {
                     log::info!("{name}: Performing cleanup for VM...");
-                    let res = if let Some(vm) = created_vm.lock().await.take() {
-                        log::info!("{name}: ...by cleaning up VM");
-                        vm.cleanup().await
+                    let res = if let Some(key) = &*created_key.lock().await {
+                        log::info!("{name}: ...by unregistering VM");
+                        VM_SESS_MGR.unregister(key).await
                     } else {
                         log::info!("{name}: ...by removing the directory");
                         fs::remove_dir_all(&name).await.map_err(|e| e.into())
@@ -244,7 +462,7 @@ where
     }
 
     // Check flag
-    let flag1 = fs::read_to_string("flag1.txt").await?;
+    let [flag1, _] = get_flags()?;
     let flag = client.recvlineafter("Flag from part 1: ").await?;
     let is_admin = if flag.trim() == flag1.trim() {
         false
@@ -257,6 +475,33 @@ where
     };
 
     Ok(Some(is_admin))
+}
+
+fn snapshot(vssd_path: &str) -> anyhow::Result<Vec<u8>> {
+    let vsm = wmi_ext::VirtualSystemManagementService::singleton()?;
+    let vssd = wmi_ext::VirtualSystemSettingData::new(vssd_path.into());
+    vsm.get_virtual_system_thumbnail_image(&vssd, 8, 8)
+}
+
+fn spawn_server(vm: &vmm::Vm, conn: &MultiplexAddr) -> anyhow::Result<()> {
+    let keyboard = vm.try_get_keyboard()?;
+
+    keyboard.type_key(0x5B)?; // VK_LWIN
+    thread::sleep(time::Duration::from_secs_f32(0.1));
+
+    keyboard.type_text("debian".into())?;
+    thread::sleep(time::Duration::from_secs_f32(0.5));
+
+    keyboard.type_key(0xD)?; // VK_RETURN
+    thread::sleep(time::Duration::from_secs(2));
+
+    let [flag1, _] = get_flags()?;
+    keyboard.type_text(format!(
+        "./run_shared.sh '{flag1}' '{}'\n",
+        conn.bash_string(),
+    ))?;
+
+    Ok(())
 }
 
 async fn client_main(
@@ -317,8 +562,7 @@ async fn client_main(
     }
     log::info!("{caddr}: Partitioning new instance: {vm_name}");
 
-    let vm = partition_vm(vm_name, vhd_src, is_admin).await?;
-    let vm2 = vm.clone();
+    let (key, vm) = partition_vm(vm_name, vhd_src, is_admin).await?;
     try_finally(
         async {
             log::info!("{caddr}: Starting VM...");
@@ -327,15 +571,35 @@ async fn client_main(
                 .await?;
             vm.start().await?;
 
-            log::info!("{caddr}: Waiting for handshake...");
+            log::info!("{caddr}: Waiting for VM to start up...");
             let timeout = time::Instant::now() + time::Duration::from_secs(300);
-            /*
-            let addr = VM_SESS_MGR
-                .wait_for_ip(&key)
-                .interruptable(&caddr, "waiting for handshake")
-                .await?
-                .ok_or_else(|| anyhow!("VM {key:032x} is not initialized yet"))?;
-            */
+
+            let vssd_path = vm
+                .get_vssd()?
+                .ok_or_else(|| anyhow!("VM does not have system settings associated"))?
+                .wmi_path;
+            loop {
+                let data = snapshot(&vssd_path)?;
+                println!("{data:?}");
+
+                let len = u32::from_ne_bytes(data[0..4].try_into().unwrap()) as usize;
+                println!("{:?}", &data[4..4+len]);
+                if data[0] == 0x13 {
+                    break;
+                }
+
+                time::sleep(time::Duration::from_secs(1))
+                    .timed(timeout)
+                    .interruptable(&caddr, "waiting for VM startup")
+                    .await?
+                    .ok_or_else(|| anyhow!("{caddr}: VM timeout while waiting for VM startup"))?;
+            }
+
+            log::info!("{caddr}: Inputing credentials");
+            std::future::pending::<()>().await;
+
+            log::info!("{caddr}: Opening terminal and running payload");
+            VM_SESS_MGR.connect_server_peer(&key).await?;
 
             if is_admin {
                 log::info!("{caddr}: Ready for multi-connect instance");
@@ -345,23 +609,25 @@ async fn client_main(
                         .await?;
                     let line = client
                         .recvline()
-                        .interruptable(&caddr, "waiting for clent line")
+                        .interruptable(&caddr, "waiting for client line")
                         .await??;
                     if line == "done" {
                         log::info!("{caddr}: Disconnecting multi-connect instance!");
                         break;
                     }
                 }
+                VM_SESS_MGR.unregister(&key).await?;
             } else {
                 log::info!("{caddr}: Reading for single-connect instance!");
-                connect_vm(timeout, addr, caddr, client).await?;
+                connect_vm(timeout, &key, caddr, client).await?;
             }
 
             Ok(())
         },
         |is_success| async move {
             if !is_success {
-                vm2.cleanup().await?;
+                log::info!("{caddr}: Performing cleanup");
+                VM_SESS_MGR.unregister(&key).await?;
             }
             Ok(())
         },
@@ -371,7 +637,7 @@ async fn client_main(
 
 async fn connect_vm<R, W>(
     timeout: time::Instant,
-    addr: IpAddr,
+    key: &u128,
     caddr: SocketAddr,
     mut client: RW<R, W>,
 ) -> Result<(), anyhow::Error>
@@ -379,10 +645,7 @@ where
     R: AsyncBufReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
-    let mut vm_conn = net::TcpSocket::new_v4()?
-        .connect(SocketAddr::new(addr, 1337))
-        .interruptable(&caddr, "connecting to VM")
-        .await??;
+    let mut vm_conn = VM_SESS_MGR.connect_client_peer(key).await?;
     let mut buffer = vec![0u8; 0x1000];
     let mut buffer2 = vec![0u8; 0x1000];
     loop {
@@ -432,26 +695,10 @@ async fn shared_main(
     caddr: SocketAddr,
     key: &u128,
 ) -> anyhow::Result<()> {
-    let vm_session = VM_SESS_MGR
-        .get_vm_session(key)
-        .await
-        .ok_or_else(|| anyhow!("Unable to get vm {key:032x}"))?;
-    let vm_addr = vm_session
-        .ip
-        .ok_or_else(|| anyhow!("VM {key:032x} is not initialized yet"))?;
     let (read, write) = client.split();
     let client = RW::new(io::BufReader::new(read), io::BufWriter::new(write));
-
-    match &vm_session.vm {
-        None => {
-            log::info!("{caddr}: Connected to shared VM: 0x{:032x}", key);
-        }
-        Some(vm) => {
-            log::info!("{caddr}: Connected to shared VM: {}", vm.name());
-        }
-    }
     let timeout = time::Instant::now() + time::Duration::from_secs(300);
-    connect_vm(timeout, vm_addr, caddr, client).await?;
+    connect_vm(timeout, key, caddr, client).await?;
     Ok(())
 }
 
@@ -482,15 +729,8 @@ impl SharedSockets {
                 continue;
             }
 
-            let maddr = VM_SESS_MGR
-                .get_vm_session(&their_key)
-                .await
-                .and_then(|vm_sess| vm_sess.ip);
-            if let Some(addr) = maddr {
-                let saddr = SocketAddr::new(addr, 0);
-                let list = net::TcpListener::bind(saddr).await?;
-                self.socks.insert(their_key, list);
-            }
+            let list = net::TcpListener::bind(("0.0.0.0", 0)).await?;
+            self.socks.insert(their_key, list);
         }
         Ok(())
     }
@@ -512,12 +752,50 @@ impl Future for SharedSocketsAccept<'_> {
     }
 }
 
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Default, Clone, Copy)]
+#[repr(C)]
+struct MultiplexAddr {
+    key: u128,
+    port: usize,
+    port_key: usize,
+}
+
+impl MultiplexAddr {
+    fn bash_string(&self) -> String {
+        let mut addr = String::with_capacity(size_of::<MultiplexAddr>() * 4);
+        for b in bytemuck::bytes_of(self) {
+            use std::fmt::Write;
+            write!(addr, "\\x{b:02x}").unwrap();
+        }
+        addr
+    }
+}
+
+async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyhow::Result<()> {
+    let timeout = time::Instant::now() + time::Duration::from_secs(60);
+    let mut port_data = MultiplexAddr::default();
+    client
+        .read_exact(bytemuck::bytes_of_mut(&mut port_data))
+        .timed(timeout)
+        .await
+        .ok_or_else(|| anyhow!("{caddr}: VM timeout while reading multiplex connection info"))??;
+
+    let mut stream = Some(client);
+    let res = VM_SESS_MGR.connect_peer(&port_data, &mut stream).await;
+    if let Some(mut stream) = stream {
+        stream.shutdown().await?;
+    }
+    res?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     hook_interrupt();
 
-    let conn_sock = net::TcpListener::bind(("0.0.0.0", 20000)).await?;
+    let conn_sock = net::TcpListener::bind(("0.0.0.0", HOST_PORT_ENTRY)).await?;
     let mut shared = SharedSockets::default();
 
     let vhd_src = args()
@@ -552,7 +830,9 @@ if (-Not (Get-VMSwitch |? { $_.Name -Eq $switchName })) {
 
 Write-Host "#[info] Assigning IP Address for switch"
 $ifIndex = (Get-NetAdapter |? { $_.Name -Like "*$switchName*" })[0].ifIndex
-Set-NetIpAddress -IPAddress 10.69.0.1 -InterfaceIndex $ifIndex -PrefixLength 16
+if (-Not (Get-NetIpAddress -InterfaceIndex 6 |? { $_.IPAddress -Eq "10.69.0.1"})) {
+    New-NetIpAddress -IPAddress 10.69.0.1 -InterfaceIndex $ifIndex -PrefixLength 16
+}
 
 Write-Host "#[info] Configuring DHCP Server"
 if (-Not (Get-DhcpServerV4Scope |? { $_.Name -Eq $dhcpName })) {
@@ -579,6 +859,7 @@ exit 0
         std::env::current_dir()?.as_os_str().to_string_lossy(),
     );
 
+    let multiplex_sock = net::TcpListener::bind((HOST_IP, HOST_PORT_MULTIPLEX)).await?;
     let mut joins = JoinSet::new();
     loop {
         match shared.update().await {
@@ -586,7 +867,19 @@ exit 0
             Err(e) => log::error!("update_shared_sockets: {e}\n{}", e.backtrace()),
         }
 
+
         tokio::select! {
+            val = multiplex_sock.accept() => {
+                let (client, addr) = val?;
+                joins.spawn(async move {
+                    match multiplex_main(client, &addr).await {
+                        Ok(()) => {}
+                        Err(e) => {
+                            log::error!("multiplex_main({addr}): {e}\n{}", e.backtrace());
+                        }
+                    }
+                });
+            }
             val = conn_sock.accept() => {
                 let vhd_src = vhd_src.clone();
                 let (mut client, addr) = val?;
