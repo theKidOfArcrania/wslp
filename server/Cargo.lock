@@ -744,6 +744,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "cgmath",
+ "env_logger",
+ "gmp-mpfr-sys",
+ "kctf-pow",
+ "log",
+ "powershell_script",
+ "rand",
+ "random_word",
+ "serde",
+ "tokio",
+ "windows",
+ "wmi",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -788,26 +808,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9e9e0b4211b72e7b8b6e85c807d36c212bdb33ea8587f7569562a84df5465b1"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "sku_setup"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "cgmath",
- "env_logger",
- "gmp-mpfr-sys",
- "kctf-pow",
- "log",
- "powershell_script",
- "rand",
- "random_word",
- "serde",
- "tokio",
- "windows",
- "wmi",
 ]
 
 [[package]]

@@ -1,6 +1,28 @@
 [workspace]
 resolver = "2"
 members = [
-  "bins/sku_setup",
   "crates/*",
 ]
+
+[package]
+name = "runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1.0.86", features = ["backtrace"] }
+env_logger = "0.11.5"
+kctf-pow = "1.2.0"
+log = "0.4.22"
+powershell_script = { path = "crates/powershell-script" }
+rand = "0.8.5"
+random_word = { version = "0.4.3", features = ["en"] }
+tokio = { version = "1.38.0", features = ["full"] }
+gmp-mpfr-sys = { version = "*", features = [ "force-cross" ] }
+wmi = "0.14"
+serde = { version = "1.0.210", features = ["derive"] }
+windows = { version = "0.58.0", features = ["Win32_System_Variant"] }
+bytemuck = { version = "1.18.0", features = ["derive"] }
+cgmath = "0.18.0"
+#png = "0.17.14"
+
