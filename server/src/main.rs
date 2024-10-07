@@ -6,9 +6,20 @@ use anyhow::anyhow;
 use cgmath::{MetricSpace, Vector2, Vector3, Zero};
 use rand::Rng;
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque}, env::args, future::Future, mem::swap, net::SocketAddr, ops::DerefMut, pin::Pin, process::exit, str::from_utf8, sync::{
-        atomic::{AtomicBool, Ordering}, Arc, Condvar, Mutex as SMutex, OnceLock
-    }, task::Poll
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    env::args,
+    future::Future,
+    mem::swap,
+    net::SocketAddr,
+    ops::DerefMut,
+    pin::Pin,
+    process::exit,
+    str::from_utf8,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex as SMutex, OnceLock,
+    },
+    task::Poll,
 };
 use tokio::{
     fs,
@@ -477,7 +488,10 @@ async fn partition_vm(
                     match res {
                         Ok(()) => {}
                         Err(e) => {
-                            log::error!("VM {name}: Unable to cleanup completely: {e}\n{}", e.backtrace())
+                            log::error!(
+                                "VM {name}: Unable to cleanup completely: {e}\n{}",
+                                e.backtrace()
+                            )
                         }
                     }
                 }
@@ -502,12 +516,10 @@ where
             fres?;
             Ok(res)
         }
-        Err(e) => {
-            Err(match fres {
-                Ok(()) => e,
-                Err(fe) => e.context(fe)
-            })
-        }
+        Err(e) => Err(match fres {
+            Ok(()) => e,
+            Err(fe) => e.context(fe),
+        }),
     }
 }
 
@@ -595,21 +607,21 @@ struct SharedFuture<F> {
 
 impl<F> Clone for SharedFuture<F> {
     fn clone(&self) -> Self {
-        Self { future: self.future.clone() }
+        Self {
+            future: self.future.clone(),
+        }
     }
 }
 
 impl<F: Future<Output = O>, O> SharedFuture<F> {
     pub fn new(future: F) -> Self {
-        Self { future: Arc::new(Mutex::new(Box::pin(future))) }
+        Self {
+            future: Arc::new(Mutex::new(Box::pin(future))),
+        }
     }
 
     pub async fn get(&self) -> O {
-        self.future
-            .lock()
-            .await
-            .deref_mut()
-            .await
+        self.future.lock().await.deref_mut().await
     }
 }
 
@@ -691,10 +703,7 @@ impl KeyboardJobSet {
             }
         };
 
-        Ok(Self {
-            state,
-            join,
-        })
+        Ok(Self { state, join })
     }
 
     pub async fn submit_job(&self, job: KeyboardJobType) -> anyhow::Result<()> {
@@ -748,13 +757,7 @@ impl vmm::Vm {
         targets: Vec<Vector3<f32>>,
     ) -> anyhow::Result<()> {
         loop {
-            let color = region_color(
-                self.get_vssd_path()?,
-                100,
-                100,
-                top,
-                size,
-            )?;
+            let color = region_color(self.get_vssd_path()?, 100, 100, top, size)?;
             if color_matches(color, &targets) {
                 return Ok(());
             }
@@ -772,7 +775,8 @@ impl vmm::Vm {
             Vector2::new(LOGIN_FIELD_X, LOGIN_FIELD_Y),
             Vector2::new(1, 1),
             COLOR_LOGIN_FIELD,
-        ).await?;
+        )
+        .await?;
 
         kb.type_text(format!("{pwd}\n")).await?;
         kb.stop().await?;
@@ -782,8 +786,8 @@ impl vmm::Vm {
             Vector2::new(TASKBAR_X, TASKBAR_TOP),
             Vector2::new(TASKBAR_W, TASKBAR_BOT - TASKBAR_TOP),
             COLOR_TASKBAR,
-        ).await?;
-
+        )
+        .await?;
 
         Ok(())
     }
@@ -802,14 +806,16 @@ impl vmm::Vm {
             Vector2::new(WINRUN_X, WINRUN_Y),
             Vector2::new(1, 1),
             COLOR_WINRUN,
-        ).await?;
+        )
+        .await?;
 
         log::info!("VM {}: Launching debian", self.name());
         let [flag1, _] = get_flags()?;
         kb.type_text(format!(
             "debian -c \"echo 'RUNNING STUFF'; ~/run_shared.sh '{flag1}' '{}'; sleep 100\"",
             conn.bash_string(),
-        )).await?;
+        ))
+        .await?;
 
         time::sleep(time::Duration::from_secs(3)).await;
         kb.press_key(0xD).await?; // VK_RETURN
@@ -820,7 +826,8 @@ impl vmm::Vm {
             Vector2::new(WINRUN_X, WINRUN_Y),
             Vector2::new(1, 1),
             COLOR_TERM,
-        ).await?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -869,10 +876,7 @@ fn region_color(
     })
 }
 
-fn color_matches(
-    actual_color: Option<Vector3<f32>>,
-    target_color_set: &[Vector3<f32>],
-) -> bool {
+fn color_matches(actual_color: Option<Vector3<f32>>, target_color_set: &[Vector3<f32>]) -> bool {
     let Some(color) = actual_color else {
         return false;
     };
@@ -960,7 +964,8 @@ async fn client_main(
                     Vector2::new(LOGIN_X, LOGIN_Y),
                     Vector2::new(LOGIN_SZ, LOGIN_SZ),
                     vec![COLOR_LOGIN, COLOR_LOGIN2],
-                ).await?;
+                )
+                .await?;
 
                 log::info!("{vm_ctx}: Inputing credentials");
                 vm.input_credentials("user").await?;
@@ -978,7 +983,8 @@ async fn client_main(
             tokio::select! {
                 res = startup_task => { res }
                 res = client.wait_for_eof() => { res? }
-            }.ok_or_else(|| anyhow::anyhow!("Timeout while starting VM"))???;
+            }
+            .ok_or_else(|| anyhow::anyhow!("Timeout while starting VM"))???;
 
             if is_admin {
                 log::info!("{vm_ctx}: Ready for multi-connect instance");
@@ -1014,7 +1020,10 @@ async fn client_main(
                 } {
                     Ok(()) => {}
                     Err(e) => {
-                        log::error!("{vm_ctx}: Unable to cleanup completely: {e}\n{}", e.backtrace())
+                        log::error!(
+                            "{vm_ctx}: Unable to cleanup completely: {e}\n{}",
+                            e.backtrace()
+                        )
                     }
                 }
                 Ok(())
@@ -1258,7 +1267,6 @@ exit 0
             Ok(_) => {}
             Err(e) => log::error!("update_shared_sockets: {e}\n{}", e.backtrace()),
         }
-
 
         tokio::select! {
             val = multiplex_sock.accept() => {

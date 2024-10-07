@@ -130,17 +130,22 @@ impl VmBuilder {
     pub async fn build(self) -> anyhow::Result<Vm> {
         let mut args = Vec::new();
         let name = self.name.unwrap_or_else(|| "New Virtual Machine".into());
-        let backing_path = self.backing_path.ok_or_else(|| anyhow::anyhow!("Must have a backing path"))?;
+        let backing_path = self
+            .backing_path
+            .ok_or_else(|| anyhow::anyhow!("Must have a backing path"))?;
 
         args.push("-Name".into());
         args.push(name.clone());
 
         if let Some(gen) = self.gen {
             args.push("-Generation".into());
-            args.push(match gen {
-                Generation::Gen1 => "1",
-                Generation::Gen2 => "2",
-            }.into());
+            args.push(
+                match gen {
+                    Generation::Gen1 => "1",
+                    Generation::Gen2 => "2",
+                }
+                .into(),
+            );
         }
 
         if let Some(boot_device) = self.boot_device {
@@ -284,16 +289,14 @@ impl Vm {
         let conn = wmi_ext::get_connection()?;
         self.vssd_path
             .get_or_try_init(|| {
-                Ok(
-                    conn.associators::<
-                        wmi_ext::VirtualSystemSettingData,
-                        wmi_ext::SettingsDefineState,
-                    >(path)?
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| wmi::WMIError::ResultEmpty)?
-                        .wmi_path
-                )
+                Ok(conn
+                    .associators::<wmi_ext::VirtualSystemSettingData, wmi_ext::SettingsDefineState>(
+                        path,
+                    )?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| wmi::WMIError::ResultEmpty)?
+                    .wmi_path)
             })
             .map(|s| s.as_str())
     }
@@ -301,11 +304,10 @@ impl Vm {
     pub fn get_keyboard(&self) -> anyhow::Result<Option<wmi_ext::Keyboard>> {
         let path = self.get_wmi_path()?;
         let conn = wmi_ext::get_connection()?;
-        Ok(
-            conn.associators::<_, wmi_ext::SystemDevice>(path)?
-                .into_iter()
-                .next()
-        )
+        Ok(conn
+            .associators::<_, wmi_ext::SystemDevice>(path)?
+            .into_iter()
+            .next())
     }
 
     pub fn try_get_keyboard(&self) -> anyhow::Result<wmi_ext::Keyboard> {
@@ -342,7 +344,12 @@ impl Vm {
         run_cmd(
             &self.ps,
             "Stop-VM",
-            vec!["-VmName".into(), escape_arg(&self.name, true), "-Force".into(), "-TurnOff".into()],
+            vec![
+                "-VmName".into(),
+                escape_arg(&self.name, true),
+                "-Force".into(),
+                "-TurnOff".into(),
+            ],
         )
         .await?;
         Ok(())
@@ -353,8 +360,14 @@ impl Vm {
         let res2 = run_cmd(
             &self.ps,
             "Remove-VM",
-            vec!["-Force".into(), "-VmName".into(), escape_arg(&self.name, true)],
-        ).await.map(|_| ());
+            vec![
+                "-Force".into(),
+                "-VmName".into(),
+                escape_arg(&self.name, true),
+            ],
+        )
+        .await
+        .map(|_| ());
 
         log::info!("Deleting VM files at {}", self.backing_path);
         fs::remove_dir_all(self.backing_path).await?;

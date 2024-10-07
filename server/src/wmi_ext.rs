@@ -2,7 +2,10 @@ use std::{cell::RefCell, collections::HashMap, mem::transmute, rc::Rc};
 
 use anyhow::bail;
 use serde::Deserialize;
-use windows::{core::{w, IUnknown, BSTR, HSTRING, VARIANT}, Win32::System::{Variant as var, Wmi::IWbemClassObject}};
+use windows::{
+    core::{w, IUnknown, BSTR, HSTRING, VARIANT},
+    Win32::System::{Variant as var, Wmi::IWbemClassObject},
+};
 use wmi::{result_enumerator::IWbemClassWrapper, variant::IUnknownWrapper};
 
 thread_local! {
@@ -82,12 +85,7 @@ impl IWbemClassExt for IWbemClassWrapper {
                 None,
             )?;
             let classobj = classobj.unwrap();
-            classobj.GetMethod(
-                &BSTR::from(method),
-                0,
-                &mut input,
-                std::ptr::null_mut(),
-            )?;
+            classobj.GetMethod(&BSTR::from(method), 0, &mut input, std::ptr::null_mut())?;
 
             let mut output = None;
             match input {
@@ -99,18 +97,13 @@ impl IWbemClassExt for IWbemClassWrapper {
                         None,
                         None,
                         Some(&mut output),
-                        None
+                        None,
                     )?;
                 }
                 Some(inputclass) => {
                     let params = inputclass.SpawnInstance(0)?;
                     for (name, value) in args {
-                        params.Put(
-                            &HSTRING::from(name),
-                            0,
-                            &to_variant(value),
-                            0,
-                        )?;
+                        params.Put(&HSTRING::from(name), 0, &to_variant(value), 0)?;
                     }
 
                     conn.svc.ExecMethod(
@@ -120,7 +113,7 @@ impl IWbemClassExt for IWbemClassWrapper {
                         None,
                         &params,
                         Some(&mut output),
-                        None
+                        None,
                     )?;
                 }
             }
@@ -131,13 +124,7 @@ impl IWbemClassExt for IWbemClassWrapper {
             let ret = wmi::Variant::from_variant(&value)?;
 
             let out = outargs.try_map(|outarg| {
-                output.Get(
-                    &BSTR::from(outarg),
-                    0,
-                    &mut value,
-                    None,
-                    None,
-                )?;
+                output.Get(&BSTR::from(outarg), 0, &mut value, None, None)?;
                 wmi::Variant::from_variant(&value)
             })?;
 
@@ -242,7 +229,10 @@ impl VirtualSystemManagementService {
         let conn = get_connection()?;
         let raw = self.raw()?;
         let mut args = HashMap::new();
-        args.insert("TargetSystem".into(), wmi::Variant::String(target.wmi_path.clone()));
+        args.insert(
+            "TargetSystem".into(),
+            wmi::Variant::String(target.wmi_path.clone()),
+        );
         args.insert("WidthPixels".into(), wmi::Variant::I2(width));
         args.insert("HeightPixels".into(), wmi::Variant::I2(height));
         let (_, [image_data]) = raw.invoke_inst_method_raw(

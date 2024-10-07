@@ -3,14 +3,13 @@ use std::process::{self, Stdio};
 use async_tempfile::TempDir;
 
 use tokio::{
-    fs, io::{self, AsyncBufReadExt, AsyncWriteExt}, process::Command, select
+    fs,
+    io::{self, AsyncBufReadExt, AsyncWriteExt},
+    process::Command,
+    select,
 };
 
-use crate::{
-    error::PsError,
-    output::Output,
-    Result,
-};
+use crate::{error::PsError, output::Output, Result};
 
 #[cfg(target_family = "unix")]
 use crate::target::unix::PsScriptImpl;
@@ -39,7 +38,10 @@ impl PsScript {
 
     async fn run_raw(&self, script: &str) -> Result<process::Output> {
         let script_dir = TempDir::new().await?;
-        let script_path = format!("{}/script.ps1", script_dir.dir_path().as_os_str().to_string_lossy());
+        let script_path = format!(
+            "{}/script.ps1",
+            script_dir.dir_path().as_os_str().to_string_lossy()
+        );
 
         let mut script_file = fs::File::create_new(&script_path).await?;
         script_file.write_all(script.as_bytes()).await?;
@@ -63,16 +65,15 @@ impl PsScript {
         }
 
         let mut process = cmd.spawn()?;
-        let mut stderr = io::BufReader::new(process
-            .stderr
-            .take()
-            .ok_or(PsError::ChildStdinNotFound)?);
-        let mut stdout = io::BufReader::new(process
-            .stdout
-            .take()
-            .ok_or(PsError::ChildStdinNotFound)?);
+        let mut stderr =
+            io::BufReader::new(process.stderr.take().ok_or(PsError::ChildStdinNotFound)?);
+        let mut stdout =
+            io::BufReader::new(process.stdout.take().ok_or(PsError::ChildStdinNotFound)?);
 
-        async fn read_line_noeof<R: AsyncBufReadExt + Unpin>(read: &mut R, buf: &mut Vec<u8>) -> io::Result<()> {
+        async fn read_line_noeof<R: AsyncBufReadExt + Unpin>(
+            read: &mut R,
+            buf: &mut Vec<u8>,
+        ) -> io::Result<()> {
             // Try to read until we get a newline
             read.read_until(b'\n', buf).await?;
 
@@ -117,7 +118,7 @@ impl PsScript {
                 write_to.append(linebuf);
             }
             linebuf.clear();
-        };
+        }
 
         Ok(process::Output {
             status,

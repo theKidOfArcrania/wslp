@@ -75,7 +75,6 @@ impl PsScriptBuilder {
 }
 
 impl Default for PsScriptBuilder {
-
     /// Creates a default builder with `no_profile`, `non_interactive` and `hidden`
     /// options set to `true` and `print_commands` set to `false`.
     fn default() -> Self {

@@ -27,7 +27,10 @@ impl fmt::Display for PsError {
             TempFileFailed => write!(f, "INTERNAL ERROR: unable to create temporary file")?,
             Io(e) => write!(f, "{}", e)?,
             PowershellNotFound => write!(f, "Failed to find powershell on this system")?,
-            ChildStdinNotFound => write!(f, "Failed to acquire a handle to stdin in the child process.")?,
+            ChildStdinNotFound => write!(
+                f,
+                "Failed to acquire a handle to stdin in the child process."
+            )?,
         }
         Ok(())
     }

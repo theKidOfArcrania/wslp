@@ -1,4 +1,4 @@
-use std::{process, fmt};
+use std::{fmt, process};
 
 /// A convenient wrapper around `process::Output` which indicates if the
 /// script ran successfully or not and gives easy access to both the utf-8

@@ -79,8 +79,8 @@
 mod builder;
 mod error;
 mod output;
-mod target;
 mod psscript;
+mod target;
 
 // Note: PowerShell Core can be isntalled on windows as well so we can't simply
 // discriminate based on target family.
