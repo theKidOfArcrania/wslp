@@ -1,20 +1,21 @@
 #![feature(once_cell_try)]
 #![feature(array_try_map)]
+#![feature(slice_split_once)]
 
 use anyhow::anyhow;
+use cgmath::{MetricSpace, Vector2, Vector3, Zero};
 use rand::Rng;
 use std::{
-    collections::{BTreeMap, BTreeSet}, env::args, future::Future, mem::swap, net::SocketAddr, process::exit, sync::{
-        atomic::{AtomicBool, Ordering}, Arc, OnceLock
-    }, task::Poll,
-    thread,
+    collections::{BTreeMap, BTreeSet, VecDeque}, env::args, future::Future, mem::swap, net::SocketAddr, ops::DerefMut, pin::Pin, process::exit, str::from_utf8, sync::{
+        atomic::{AtomicBool, Ordering}, Arc, Condvar, Mutex as SMutex, OnceLock
+    }, task::Poll
 };
 use tokio::{
     fs,
     io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     net, signal,
     sync::{Mutex, Notify},
-    task::JoinSet,
+    task::{spawn_blocking, JoinHandle, JoinSet},
     time::{self, Instant},
 };
 use vmm::{PSBool, PSState, StartAction, StopAction};
@@ -25,6 +26,25 @@ const DIFFICULTY: u32 = 20;
 const HOST_IP: &str = "10.69.0.1";
 const HOST_PORT_MULTIPLEX: u16 = 31337;
 const HOST_PORT_ENTRY: u16 = 20000;
+
+const COLOR_LOGIN: Vector3<f32> = Vector3::new(0.0, 0.11, 0.533);
+const COLOR_LOGIN2: Vector3<f32> = Vector3::new(0.031, 0.169, 0.788);
+const COLOR_LOGIN_FIELD: Vector3<f32> = Vector3::new(0.094, 0.11, 0.22);
+const COLOR_TERM: Vector3<f32> = Vector3::new(0.031, 0.047, 0.031);
+const COLOR_TASKBAR: Vector3<f32> = Vector3::new(0.91, 0.925, 0.91);
+const COLOR_WINRUN: Vector3<f32> = Vector3::new(0.941, 0.941, 0.941);
+
+const LOGIN_X: usize = 40;
+const LOGIN_Y: usize = 13;
+const LOGIN_SZ: usize = 5;
+const LOGIN_FIELD_X: usize = 50;
+const LOGIN_FIELD_Y: usize = 54;
+const TASKBAR_TOP: usize = 83;
+const TASKBAR_BOT: usize = 87;
+const TASKBAR_X: usize = 20;
+const TASKBAR_W: usize = 5;
+const WINRUN_X: usize = 8;
+const WINRUN_Y: usize = 63;
 
 mod instances;
 mod vmm;
@@ -78,10 +98,13 @@ fn get_flags() -> anyhow::Result<[&'static str; 2]> {
     Ok([flag1, flag2])
 }
 
+const MAX_BUFFER: usize = 0x1000;
+
 struct RW<R: AsyncBufReadExt, W: AsyncWriteExt> {
     read: R,
     write: W,
-    buff: String,
+    rbuff: Vec<u8>,
+    rbuff_ret: Vec<u8>,
 }
 
 impl<R: AsyncBufReadExt + Unpin, W: AsyncWriteExt + Unpin> RW<R, W> {
@@ -89,7 +112,27 @@ impl<R: AsyncBufReadExt + Unpin, W: AsyncWriteExt + Unpin> RW<R, W> {
         RW {
             read,
             write,
-            buff: String::new(),
+            rbuff: Vec::new(),
+            rbuff_ret: Vec::new(),
+        }
+    }
+
+    async fn wait_for_eof<X>(&mut self) -> anyhow::Result<X> {
+        let mut chunk = vec![0; MAX_BUFFER];
+        loop {
+            let read = self.read.read(&mut chunk).await?;
+            if read == 0 {
+                anyhow::bail!("Peer sent EOF");
+            }
+            if self.rbuff.len() >= MAX_BUFFER {
+                // Feel free to drop this chunk... them bozos just spamming us
+                // with a lot of data so they probably don't care if we retain
+                // these bytes...
+                continue;
+            }
+
+            let copylen = read.min(MAX_BUFFER - self.rbuff.len());
+            self.rbuff.extend_from_slice(&chunk[0..copylen])
         }
     }
 
@@ -100,9 +143,18 @@ impl<R: AsyncBufReadExt + Unpin, W: AsyncWriteExt + Unpin> RW<R, W> {
     }
 
     async fn recvline(&mut self) -> anyhow::Result<&str> {
-        self.buff.clear();
-        self.read.read_line(&mut self.buff).await?;
-        Ok(self.buff.trim_end_matches(|c| c == '\n' || c == '\r'))
+        self.rbuff_ret.clear();
+        if let Some((line, _)) = self.rbuff.split_once(|c| *c == b'\n') {
+            self.rbuff_ret.extend_from_slice(line);
+            let range = line.len() + 1..self.rbuff.len();
+            self.rbuff.copy_within(range, 0);
+        } else {
+            self.read.read_until(b'\n', &mut self.rbuff).await?;
+            self.rbuff_ret.extend_from_slice(&self.rbuff);
+            self.rbuff.clear();
+        }
+
+        Ok(from_utf8(&self.rbuff_ret)?.trim_end_matches(|c| c == '\n' || c == '\r'))
     }
 
     async fn recvlineafter(&mut self, prompt: &str) -> anyhow::Result<&str> {
@@ -194,10 +246,8 @@ impl VmSessionsMgr {
         };
 
         let vm = vm.clone();
-        tokio::spawn(async move {
-            spawn_server(&vm, &mpa)
-        }).await??;
         drop(sessions);
+        vm.start_wsl(&mpa).await?;
 
         let client = self.wait_for_peer(key, mpa.port).await?;
 
@@ -275,6 +325,7 @@ impl VmSessionsMgr {
     }
 
     pub async fn wait_for_peer(&self, key: &u128, port: usize) -> anyhow::Result<net::TcpStream> {
+        log::info!("{key:032x}: Waiting for peer connection to port {port}");
         loop {
             let mut sessions = self.sessions.lock().await;
             let Some(sess) = sessions.get_mut(&key) else {
@@ -357,26 +408,31 @@ async fn partition_vm(
     let created_key = Arc::new(Mutex::new(None));
     try_finally(
         async {
-            log::info!("{name}: Copying base files");
             fs::create_dir(&name).await?;
-            fs::copy(&vhd_src, &vhd_path).await?;
-            if interrupted() {
-                anyhow::bail!("{name}: Interrupted while copying files!");
-            }
+            let vhd_path = if vhd_src.contains("debug") {
+                log::warn!("Skipping copying base files because vhd is debug");
+                vhd_src
+            } else {
+                log::info!("VM {name}: Copying base files");
+                fs::copy(&vhd_src, &vhd_path).await?;
+                if interrupted() {
+                    anyhow::bail!("VM {name}: Interrupted while copying files!");
+                }
+                &vhd_path
+            };
 
-            log::info!("{name}: Registering VM");
             let key = VM_SESS_MGR.register_new(shared).await;
-            log::info!("{name}: VM {name} -> 0x{key:032x}");
+            log::info!("VM {name}: Registered VM -> 0x{key:032x}");
 
             *created_key.lock().await = Some(key);
 
-            log::info!("{name}: Creating VM...");
+            log::info!("VM {name}: Creating VM...");
             let vm = vmm::VmBuilder::default()
                 .backing_path(name.clone())
                 .name(name.clone())
                 .use_gen2()
                 .memory_startup_bytes("1GB".into())
-                .existing_vhd(vhd_path)
+                .existing_vhd(vhd_path.into())
                 .path(format!("{name}/vm"))
                 .boot_device(vmm::BootDevice::VHD)
                 .build()
@@ -385,7 +441,7 @@ async fn partition_vm(
 
             VM_SESS_MGR.associate_vm(&key, vm.clone()).await;
 
-            log::info!("{name}: Configuring VM...");
+            log::info!("VM {name}: Configuring VM...");
             vm.set_bundled()
                 .set(&vmm::attrs::AutomaticCheckpointsEnabled, PSBool(false))
                 .set(&vmm::attrs::AutomaticStartAction, StartAction::Nothing)
@@ -401,7 +457,7 @@ async fn partition_vm(
                 .interruptable(&name, "adding network")
                 .await??;
 
-            log::info!("{name}: Configuration completed!");
+            log::info!("VM {name}: Configuration completed!");
             Ok((key, vm))
         },
         |is_success| {
@@ -409,19 +465,19 @@ async fn partition_vm(
             let created_key = created_key.clone();
             async move {
                 if !is_success {
-                    log::warn!("{name}: Performing cleanup for VM due to error...");
+                    log::warn!("VM {name}: Performing cleanup for VM due to error...");
                     let res = if let Some(key) = &*created_key.lock().await {
-                        log::info!("{name}: ...by unregistering VM");
+                        log::info!("VM {name}: ...by unregistering VM");
                         VM_SESS_MGR.unregister(key).await
                     } else {
-                        log::info!("{name}: ...by removing the directory");
+                        log::info!("VM {name}: ...by removing the directory");
                         fs::remove_dir_all(&name).await.map_err(|e| e.into())
                     };
 
                     match res {
                         Ok(()) => {}
                         Err(e) => {
-                            log::error!("Unable to clean VM for {name}: {e}\n{}", e.backtrace())
+                            log::error!("VM {name}: Unable to cleanup completely: {e}\n{}", e.backtrace())
                         }
                     }
                 }
@@ -432,16 +488,27 @@ async fn partition_vm(
     .await
 }
 
-async fn try_finally<T, E, F>(
-    action: impl Future<Output = Result<T, E>>,
+async fn try_finally<T, F>(
+    action: impl Future<Output = anyhow::Result<T>>,
     finally_case: impl Fn(bool) -> F,
-) -> Result<T, E>
+) -> anyhow::Result<T>
 where
-    F: Future<Output = Result<(), E>>,
+    F: Future<Output = anyhow::Result<()>>,
 {
     let res = action.await;
-    finally_case(res.is_ok()).await?;
-    res
+    let fres = finally_case(res.is_ok()).await;
+    match res {
+        Ok(res) => {
+            fres?;
+            Ok(res)
+        }
+        Err(e) => {
+            Err(match fres {
+                Ok(()) => e,
+                Err(fe) => e.context(fe)
+            })
+        }
+    }
 }
 
 async fn client_auth<R, W>(client: &mut RW<R, W>) -> anyhow::Result<Option<bool>>
@@ -477,31 +544,344 @@ where
     Ok(Some(is_admin))
 }
 
-fn snapshot(vssd_path: &str) -> anyhow::Result<Vec<u8>> {
+fn snapshot(vssd_path: &str, width: i16, height: i16) -> anyhow::Result<Option<Vec<Vector3<f32>>>> {
+    const FRAC: f32 = 1.0 / 256.0;
+
     let vsm = wmi_ext::VirtualSystemManagementService::singleton()?;
     let vssd = wmi_ext::VirtualSystemSettingData::new(vssd_path.into());
-    vsm.get_virtual_system_thumbnail_image(&vssd, 8, 8)
+    let data = vsm.get_virtual_system_thumbnail_image(&vssd, width, height)?;
+    if data.len() == 0 {
+        return Ok(None);
+    }
+
+    let mut ret = Vec::new();
+    let data = bytemuck::cast_slice::<_, u16>(&data[4..]);
+    for &pixel in data {
+        let b = (pixel << 3) as u8 as f32 * FRAC;
+        let g = ((pixel >> 3) & !3) as u8 as f32 * FRAC;
+        let r = ((pixel >> 8) & !7) as u8 as f32 * FRAC;
+        ret.push(Vector3::new(r, g, b));
+    }
+
+    Ok(Some(ret))
 }
 
-fn spawn_server(vm: &vmm::Vm, conn: &MultiplexAddr) -> anyhow::Result<()> {
-    let keyboard = vm.try_get_keyboard()?;
+#[derive(Debug)]
+enum KeyboardJobType {
+    TypeCtrlAltDel(),
+    TypeText(String),
+    PressKey(u32),
+    ReleaseKey(u32),
+    //TypeKey(u32),
+}
 
-    keyboard.type_key(0x5B)?; // VK_LWIN
-    thread::sleep(time::Duration::from_secs_f32(0.1));
+struct KeyboardJob {
+    tp: KeyboardJobType,
+    notify: Notify,
+}
 
-    keyboard.type_text("debian".into())?;
-    thread::sleep(time::Duration::from_secs_f32(0.5));
+impl KeyboardJob {
+    fn new(tp: KeyboardJobType) -> Arc<Self> {
+        Arc::new(Self {
+            tp,
+            notify: Notify::new(),
+        })
+    }
+}
 
-    keyboard.type_key(0xD)?; // VK_RETURN
-    thread::sleep(time::Duration::from_secs(2));
+struct SharedFuture<F> {
+    future: Arc<Mutex<Pin<Box<F>>>>,
+}
 
-    let [flag1, _] = get_flags()?;
-    keyboard.type_text(format!(
-        "./run_shared.sh '{flag1}' '{}'\n",
-        conn.bash_string(),
-    ))?;
+impl<F> Clone for SharedFuture<F> {
+    fn clone(&self) -> Self {
+        Self { future: self.future.clone() }
+    }
+}
 
+impl<F: Future<Output = O>, O> SharedFuture<F> {
+    pub fn new(future: F) -> Self {
+        Self { future: Arc::new(Mutex::new(Box::pin(future))) }
+    }
+
+    pub async fn get(&self) -> O {
+        self.future
+            .lock()
+            .await
+            .deref_mut()
+            .await
+    }
+}
+
+#[derive(Default)]
+struct KeyboardJobState {
+    running_notify: Notify,
+    stopping: AtomicBool,
+    jobs: SMutex<VecDeque<Arc<KeyboardJob>>>,
+    job_notify: Condvar,
+}
+
+struct KeyboardJobSet {
+    join: SharedFuture<JoinHandle<anyhow::Result<()>>>,
+    state: Arc<KeyboardJobState>,
+}
+
+macro_rules! keyjob {
+    ($($fn:ident($($arg:ident: $tp:ty)*) -> $enum:ident;)*) => {
+        $(
+            pub async fn $fn(&self $(, $arg: $tp)*) -> anyhow::Result<()> {
+                self.submit_job(KeyboardJobType::$enum($($arg)*)).await
+            }
+        )*
+    }
+}
+
+impl Drop for KeyboardJobSet {
+    fn drop(&mut self) {
+        self.state.stopping.store(true, Ordering::Relaxed);
+        self.state.job_notify.notify_one();
+    }
+}
+
+impl KeyboardJobSet {
+    pub async fn new(vm: &vmm::Vm) -> anyhow::Result<Self> {
+        let vm = vm.clone();
+        let state = Arc::new(KeyboardJobState::default());
+
+        let state2 = state.clone();
+        let join = spawn_blocking(move || {
+            let kb = vm.try_get_keyboard()?;
+            state2.running_notify.notify_one();
+            while !state2.stopping.load(Ordering::Relaxed) {
+                let mut state_lock = state2.jobs.lock().unwrap();
+                let job = match state_lock.pop_front() {
+                    Some(job) => {
+                        drop(state_lock);
+                        job
+                    }
+                    None => {
+                        let res = state2.job_notify.wait(state_lock).unwrap().pop_front();
+                        match res {
+                            Some(job) if !state2.stopping.load(Ordering::Relaxed) => job,
+                            _ => continue,
+                        }
+                    }
+                };
+
+                let _ = match &job.tp {
+                    KeyboardJobType::TypeCtrlAltDel() => kb.type_ctrl_alt_del(),
+                    KeyboardJobType::TypeText(msg) => kb.type_text(msg.clone()),
+                    &KeyboardJobType::PressKey(kc) => kb.press_key(kc),
+                    &KeyboardJobType::ReleaseKey(kc) => kb.release_key(kc),
+                    //&KeyboardJobType::TypeKey(kc) => kb.type_key(kc),
+                }?;
+
+                job.notify.notify_one();
+            }
+            Ok(())
+        });
+
+        let join = SharedFuture::new(join);
+        let join2 = join.clone();
+        tokio::select! {
+            _ = state.running_notify.notified() => { () }
+            joinres = join2.get() => {
+                joinres??;
+                anyhow::bail!("Job has already been aborted");
+            }
+        };
+
+        Ok(Self {
+            state,
+            join,
+        })
+    }
+
+    pub async fn submit_job(&self, job: KeyboardJobType) -> anyhow::Result<()> {
+        let job = KeyboardJob::new(job);
+        let join = self.join.clone();
+        self.state.jobs.lock().unwrap().push_back(job.clone());
+        self.state.job_notify.notify_one();
+        tokio::select! {
+            _ = job.notify.notified() => { () }
+            joinres = join.get() => {
+                joinres??;
+                anyhow::bail!("Job has already been aborted");
+            }
+        };
+        Ok(())
+    }
+
+    keyjob! {
+        type_ctrl_alt_del() -> TypeCtrlAltDel;
+        type_text(msg: String) -> TypeText;
+        press_key(kc: u32) -> PressKey;
+        release_key(kc: u32) -> ReleaseKey;
+        //type_key(kc: u32) -> TypeKey;
+    }
+
+    pub async fn stop(self) -> anyhow::Result<()> {
+        self.state.stopping.store(true, Ordering::Relaxed);
+        self.state.job_notify.notify_one();
+        self.join.get().await?
+    }
+}
+
+impl vmm::Vm {
+    async fn get_keyboard_async(&self) -> anyhow::Result<KeyboardJobSet> {
+        KeyboardJobSet::new(self).await
+    }
+
+    async fn wait_for_region(
+        &self,
+        top: Vector2<usize>,
+        size: Vector2<usize>,
+        target: Vector3<f32>,
+    ) -> anyhow::Result<()> {
+        self.wait_for_region_set(top, size, vec![target]).await
+    }
+
+    async fn wait_for_region_set(
+        &self,
+        top: Vector2<usize>,
+        size: Vector2<usize>,
+        targets: Vec<Vector3<f32>>,
+    ) -> anyhow::Result<()> {
+        loop {
+            let color = region_color(
+                self.get_vssd_path()?,
+                100,
+                100,
+                top,
+                size,
+            )?;
+            if color_matches(color, &targets) {
+                return Ok(());
+            }
+
+            time::sleep(time::Duration::from_secs_f32(0.1)).await;
+        }
+    }
+
+    async fn input_credentials(&self, pwd: &str) -> anyhow::Result<()> {
+        let kb = self.get_keyboard_async().await?;
+        kb.type_ctrl_alt_del().await?;
+
+        log::info!("VM {}: Waiting for login field to load", self.name());
+        self.wait_for_region(
+            Vector2::new(LOGIN_FIELD_X, LOGIN_FIELD_Y),
+            Vector2::new(1, 1),
+            COLOR_LOGIN_FIELD,
+        ).await?;
+
+        kb.type_text(format!("{pwd}\n")).await?;
+        kb.stop().await?;
+
+        log::info!("VM {}: Waiting for taskbar to load", self.name());
+        self.wait_for_region(
+            Vector2::new(TASKBAR_X, TASKBAR_TOP),
+            Vector2::new(TASKBAR_W, TASKBAR_BOT - TASKBAR_TOP),
+            COLOR_TASKBAR,
+        ).await?;
+
+
+        Ok(())
+    }
+
+    async fn start_wsl(&self, conn: &MultiplexAddr) -> anyhow::Result<()> {
+        log::info!("VM {}: Launching runner", self.name());
+        let kb = self.get_keyboard_async().await?;
+        kb.press_key(0x5B).await?; // VK_LWIN
+        kb.press_key(0x52).await?; // R
+        time::sleep(time::Duration::from_secs(3)).await;
+
+        kb.release_key(0x5B).await?; // VK_LWIN
+        kb.release_key(0x52).await?; // R
+
+        self.wait_for_region(
+            Vector2::new(WINRUN_X, WINRUN_Y),
+            Vector2::new(1, 1),
+            COLOR_WINRUN,
+        ).await?;
+
+        log::info!("VM {}: Launching debian", self.name());
+        let [flag1, _] = get_flags()?;
+        kb.type_text(format!(
+            "debian -c \"echo 'RUNNING STUFF'; ~/run_shared.sh '{flag1}' '{}'; sleep 100\"",
+            conn.bash_string(),
+        )).await?;
+
+        time::sleep(time::Duration::from_secs(3)).await;
+        kb.press_key(0xD).await?; // VK_RETURN
+        kb.stop().await?;
+
+        log::info!("VM {}: Waiting for terminal", self.name());
+        self.wait_for_region(
+            Vector2::new(WINRUN_X, WINRUN_Y),
+            Vector2::new(1, 1),
+            COLOR_TERM,
+        ).await?;
+
+        Ok(())
+    }
+}
+
+/*
+fn save_screenshot(vssd_path: &str, file: &str, width: i16, height: i16) -> anyhow::Result<()> {
+    let idata = snapshot(vssd_path, width, height)?;
+    if let Some(idata) = idata {
+        let idata: Vec<_> = idata.into_iter().flat_map(|mut v| {
+            v = v * 256.0;
+            [v.x as u8, v.y as u8, v.z as u8]
+        }).collect();
+        let file = std::fs::File::create(file)?;
+        let mut img = png::Encoder::new(file, width.try_into()?, height.try_into()?);
+        img.set_color(png::ColorType::Rgb);
+        img.set_depth(png::BitDepth::Eight);
+        let mut writer = img.write_header()?;
+        writer.write_image_data(&idata)?;
+        writer.finish()?;
+    }
     Ok(())
+}
+*/
+
+fn region_color(
+    vssd_path: &str,
+    width: i16,
+    height: i16,
+    top: Vector2<usize>,
+    size: Vector2<usize>,
+) -> anyhow::Result<Option<Vector3<f32>>> {
+    let data = snapshot(&vssd_path, width, height)?;
+    Ok(if let Some(pixels) = data {
+        let mut sum = Vector3::zero();
+        let mut cnt = 0;
+        for x in top.x..(top.x + size.x) {
+            for y in top.y..(top.y + size.y) {
+                sum += pixels[y * width as usize + x];
+                cnt += 1;
+            }
+        }
+        Some(sum / cnt as f32)
+    } else {
+        None
+    })
+}
+
+fn color_matches(
+    actual_color: Option<Vector3<f32>>,
+    target_color_set: &[Vector3<f32>],
+) -> bool {
+    let Some(color) = actual_color else {
+        return false;
+    };
+    for target_color in target_color_set {
+        if target_color.distance2(color) < 0.0001 {
+            return true;
+        }
+    }
+    false
 }
 
 async fn client_main(
@@ -562,81 +942,89 @@ async fn client_main(
     }
     log::info!("{caddr}: Partitioning new instance: {vm_name}");
 
+    let vm_ctx = format!("VM {vm_name}");
     let (key, vm) = partition_vm(vm_name, vhd_src, is_admin).await?;
     try_finally(
         async {
-            log::info!("{caddr}: Starting VM...");
+            log::info!("{vm_ctx}: Starting VM...");
             client
                 .send("Partition complete! Starting up VM...\n")
                 .await?;
             vm.start().await?;
 
-            log::info!("{caddr}: Waiting for VM to start up...");
-            let timeout = time::Instant::now() + time::Duration::from_secs(300);
+            log::info!("{vm_ctx}: Waiting for VM to start up...");
+            let timeout = time::Instant::now() + time::Duration::from_secs(600);
+            let ctx = format!("VM {}", vm.name());
+            let startup_task = async {
+                vm.wait_for_region_set(
+                    Vector2::new(LOGIN_X, LOGIN_Y),
+                    Vector2::new(LOGIN_SZ, LOGIN_SZ),
+                    vec![COLOR_LOGIN, COLOR_LOGIN2],
+                ).await?;
 
-            let vssd_path = vm
-                .get_vssd()?
-                .ok_or_else(|| anyhow!("VM does not have system settings associated"))?
-                .wmi_path;
-            loop {
-                let data = snapshot(&vssd_path)?;
-                println!("{data:?}");
+                log::info!("{vm_ctx}: Inputing credentials");
+                vm.input_credentials("user").await?;
 
-                let len = u32::from_ne_bytes(data[0..4].try_into().unwrap()) as usize;
-                println!("{:?}", &data[4..4+len]);
-                if data[0] == 0x13 {
-                    break;
-                }
+                log::info!("{vm_ctx}: Opening terminal and running payload");
+                VM_SESS_MGR.connect_server_peer(&key).await?;
 
-                time::sleep(time::Duration::from_secs(1))
-                    .timed(timeout)
-                    .interruptable(&caddr, "waiting for VM startup")
-                    .await?
-                    .ok_or_else(|| anyhow!("{caddr}: VM timeout while waiting for VM startup"))?;
+                anyhow::Ok(())
             }
+            .interruptable(&ctx, "waiting for VM startup")
+            .timed(timeout);
 
-            log::info!("{caddr}: Inputing credentials");
-            std::future::pending::<()>().await;
-
-            log::info!("{caddr}: Opening terminal and running payload");
-            VM_SESS_MGR.connect_server_peer(&key).await?;
+            // This is to ensure that we don't try to spend more resources if the
+            // user decides to DC from a connection
+            tokio::select! {
+                res = startup_task => { res }
+                res = client.wait_for_eof() => { res? }
+            }.ok_or_else(|| anyhow::anyhow!("Timeout while starting VM"))???;
 
             if is_admin {
-                log::info!("{caddr}: Ready for multi-connect instance");
+                log::info!("{vm_ctx}: Ready for multi-connect instance");
                 loop {
                     client
                         .send("Enter 'done' or close this connection to stop VM")
                         .await?;
                     let line = client
                         .recvline()
-                        .interruptable(&caddr, "waiting for client line")
+                        .interruptable(&vm_ctx, "waiting for client line")
                         .await??;
                     if line == "done" {
-                        log::info!("{caddr}: Disconnecting multi-connect instance!");
+                        log::info!("{vm_ctx}: Disconnecting multi-connect instance!");
                         break;
                     }
                 }
                 VM_SESS_MGR.unregister(&key).await?;
             } else {
-                log::info!("{caddr}: Reading for single-connect instance!");
-                connect_vm(timeout, &key, caddr, client).await?;
+                log::info!("{vm_ctx}: Reading for single-connect instance!");
+                connect_vm(&key, caddr, client).await?;
             }
 
             Ok(())
         },
-        |is_success| async move {
-            if !is_success {
-                log::info!("{caddr}: Performing cleanup");
-                VM_SESS_MGR.unregister(&key).await?;
+        |is_success| {
+            let vm_ctx = vm_ctx.clone();
+            async move {
+                match if is_success {
+                    Ok(())
+                } else {
+                    log::info!("{vm_ctx}: Performing cleanup");
+                    VM_SESS_MGR.unregister(&key).await
+                } {
+                    Ok(()) => {}
+                    Err(e) => {
+                        log::error!("{vm_ctx}: Unable to cleanup completely: {e}\n{}", e.backtrace())
+                    }
+                }
+                Ok(())
             }
-            Ok(())
         },
     )
     .await
 }
 
 async fn connect_vm<R, W>(
-    timeout: time::Instant,
     key: &u128,
     caddr: SocketAddr,
     mut client: RW<R, W>,
@@ -648,6 +1036,11 @@ where
     let mut vm_conn = VM_SESS_MGR.connect_client_peer(key).await?;
     let mut buffer = vec![0u8; 0x1000];
     let mut buffer2 = vec![0u8; 0x1000];
+
+    let timeout = time::Instant::now() + time::Duration::from_secs(300);
+    client
+        .send("Connected to VM! You have 300 seconds left.\n")
+        .await?;
     loop {
         let (read, is_vm_to_client) = tokio::select! {
             vm_bytes = vm_conn.read(&mut buffer) => {
@@ -697,8 +1090,7 @@ async fn shared_main(
 ) -> anyhow::Result<()> {
     let (read, write) = client.split();
     let client = RW::new(io::BufReader::new(read), io::BufWriter::new(write));
-    let timeout = time::Instant::now() + time::Duration::from_secs(300);
-    connect_vm(timeout, key, caddr, client).await?;
+    connect_vm(key, caddr, client).await?;
     Ok(())
 }
 

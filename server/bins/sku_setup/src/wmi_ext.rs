@@ -191,8 +191,6 @@ pub struct ComputerSystem {
 #[derive(Deserialize, Debug)]
 #[serde(rename = "Msvm_VirtualSystemSettingData")]
 pub struct VirtualSystemSettingData {
-    #[serde(skip)]
-    raw: RefCell<Option<IWbemClassWrapper>>,
     #[serde(rename = "__Path")]
     pub wmi_path: String,
 }
@@ -203,20 +201,7 @@ pub struct SettingsDefineState {}
 
 impl VirtualSystemSettingData {
     pub fn new(wmi_path: String) -> Self {
-        Self {
-            raw: Default::default(),
-            wmi_path
-        }
-    }
-
-    fn raw(&self) -> anyhow::Result<IWbemClassWrapper> {
-        if let Some(raw) = (*self.raw.borrow()).clone() {
-            return Ok(raw.clone());
-        }
-
-        let raw = get_connection()?.get_raw_by_path(&self.wmi_path)?;
-        *self.raw.borrow_mut() = Some(raw.clone());
-        Ok(raw)
+        Self { wmi_path }
     }
 }
 
@@ -257,7 +242,7 @@ impl VirtualSystemManagementService {
         let conn = get_connection()?;
         let raw = self.raw()?;
         let mut args = HashMap::new();
-        args.insert("VirtualSystemSettingData".into(), wmi::Variant::Object(target.raw()?));
+        args.insert("TargetSystem".into(), wmi::Variant::String(target.wmi_path.clone()));
         args.insert("WidthPixels".into(), wmi::Variant::I2(width));
         args.insert("HeightPixels".into(), wmi::Variant::I2(height));
         let (_, [image_data]) = raw.invoke_inst_method_raw(
@@ -275,6 +260,7 @@ impl VirtualSystemManagementService {
                     ret.push(val.try_into()?);
                 }
             }
+            wmi::Variant::Null => ret = Vec::new(),
             _ => bail!("Expected a byte array"),
         }
         Ok(ret)
@@ -317,6 +303,15 @@ impl Keyboard {
         let mut args = HashMap::new();
         args.insert("keyCode".into(), wmi::Variant::I4(keycode as i32));
         let (res, _) = raw.invoke_inst_method_raw(&*conn, "PressKey", &args, &[])?;
+        Ok(res.try_into()?)
+    }
+
+    pub fn release_key(&self, keycode: u32) -> anyhow::Result<i32> {
+        let conn = get_connection()?;
+        let raw = self.raw()?;
+        let mut args = HashMap::new();
+        args.insert("keyCode".into(), wmi::Variant::I4(keycode as i32));
+        let (res, _) = raw.invoke_inst_method_raw(&*conn, "ReleaseKey", &args, &[])?;
         Ok(res.try_into()?)
     }
 

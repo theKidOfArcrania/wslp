@@ -27,6 +27,7 @@ macro_rules! cenum {
 pub fn create_ps() -> PsScript {
     PsScriptBuilder::new()
         .non_interactive(false)
+        .err_passthru(true)
         .no_profile(true)
         .print_commands(false)
         .build()
@@ -134,6 +135,14 @@ impl VmBuilder {
         args.push("-Name".into());
         args.push(name.clone());
 
+        if let Some(gen) = self.gen {
+            args.push("-Generation".into());
+            args.push(match gen {
+                Generation::Gen1 => "1",
+                Generation::Gen2 => "2",
+            }.into());
+        }
+
         if let Some(boot_device) = self.boot_device {
             args.push("-BootDevice".into());
             args.push(format!("{boot_device:?}"));
@@ -170,6 +179,7 @@ impl VmBuilder {
 pub struct Vm {
     backing_path: String,
     vm_wmi_path: OnceLock<String>,
+    vssd_path: OnceLock<String>,
     ps: PsScript,
     name: String,
 }
@@ -178,10 +188,41 @@ impl Clone for Vm {
     fn clone(&self) -> Self {
         Self {
             backing_path: self.backing_path.clone(),
-            vm_wmi_path: OnceLock::new(),
+            vm_wmi_path: self.vm_wmi_path.clone(),
+            vssd_path: self.vssd_path.clone(),
             ps: create_ps(),
             name: self.name.clone(),
         }
+    }
+}
+
+pub(crate) fn escape_arg(arg: &str, mut require_quotes: bool) -> String {
+    let mut tmp = String::from("\"");
+    for c in arg.chars() {
+        let repl = match c {
+            ' ' => {
+                require_quotes = true;
+                None
+            }
+            '"' => Some("`\""),
+            '$' => Some("`$"),
+            '`' => Some("``"),
+            _ => None,
+        };
+        match repl {
+            None => tmp.push(c),
+            Some(repl) => {
+                require_quotes = true;
+                tmp.push_str(repl);
+            }
+        }
+    }
+
+    if require_quotes {
+        tmp.push('"');
+        tmp
+    } else {
+        arg.to_string()
     }
 }
 
@@ -189,34 +230,7 @@ pub(crate) async fn run_cmd(ps: &PsScript, cmd: &str, args: Vec<String>) -> anyh
     let mut script: String = cmd.into();
     for arg in args {
         script.push_str(" ");
-
-        let mut tmp = String::new();
-        let mut need_quotes = false;
-        for c in arg.chars() {
-            let repl = match c {
-                ' ' => {
-                    need_quotes = true;
-                    None
-                }
-                '"' => Some("`\""),
-                '$' => Some("`$"),
-                '`' => Some("``"),
-                _ => None,
-            };
-            match repl {
-                None => tmp.push(c),
-                Some(repl) => {
-                    need_quotes = true;
-                    tmp.push_str(repl);
-                }
-            }
-        }
-
-        if need_quotes {
-            script.push_str(&format!("\"{tmp}\""))
-        } else {
-            script.push_str(&arg);
-        }
+        script.push_str(&arg);
     }
     Ok(ps.run(&script).await?)
 }
@@ -231,6 +245,7 @@ impl Vm {
         let _ = run_cmd(&ps, "New-VM", args).await?;
         Ok(Self {
             vm_wmi_path: OnceLock::new(),
+            vssd_path: OnceLock::new(),
             backing_path,
             ps,
             name,
@@ -264,18 +279,23 @@ impl Vm {
             .map(|s| s.as_str())
     }
 
-    pub fn get_vssd(&self) -> anyhow::Result<Option<wmi_ext::VirtualSystemSettingData>> {
+    pub fn get_vssd_path(&self) -> anyhow::Result<&str> {
         let path = self.get_wmi_path()?;
         let conn = wmi_ext::get_connection()?;
-        Ok(
-            conn.associators::<_, wmi_ext::SettingsDefineState>(path)?
-                .into_iter()
-                .next()
-        )
-    }
-
-    pub fn try_get_vssd(&self) -> anyhow::Result<wmi_ext::VirtualSystemSettingData> {
-        self.get_vssd()?.ok_or_else(|| wmi::WMIError::ResultEmpty.into())
+        self.vssd_path
+            .get_or_try_init(|| {
+                Ok(
+                    conn.associators::<
+                        wmi_ext::VirtualSystemSettingData,
+                        wmi_ext::SettingsDefineState,
+                    >(path)?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| wmi::WMIError::ResultEmpty)?
+                        .wmi_path
+                )
+            })
+            .map(|s| s.as_str())
     }
 
     pub fn get_keyboard(&self) -> anyhow::Result<Option<wmi_ext::Keyboard>> {
@@ -299,9 +319,9 @@ impl Vm {
             "Add-VMNetworkAdapter",
             vec![
                 "-VmName".into(),
-                self.name.clone(),
+                escape_arg(&self.name, true),
                 "-SwitchName".into(),
-                switch,
+                escape_arg(&switch, true),
             ],
         )
         .await?;
@@ -312,7 +332,7 @@ impl Vm {
         run_cmd(
             &self.ps,
             "Start-VM",
-            vec!["-VmName".into(), self.name.clone()],
+            vec!["-VmName".into(), escape_arg(&self.name, true)],
         )
         .await?;
         Ok(())
@@ -322,7 +342,7 @@ impl Vm {
         run_cmd(
             &self.ps,
             "Stop-VM",
-            vec!["-VmName".into(), self.name.clone(), "-Force".into()],
+            vec!["-VmName".into(), escape_arg(&self.name, true), "-Force".into(), "-TurnOff".into()],
         )
         .await?;
         Ok(())
@@ -333,7 +353,7 @@ impl Vm {
         let res2 = run_cmd(
             &self.ps,
             "Remove-VM",
-            vec!["-Force".into(), "-VmName".into(), self.name.clone()],
+            vec!["-Force".into(), "-VmName".into(), escape_arg(&self.name, true)],
         ).await.map(|_| ());
 
         log::info!("Deleting VM files at {}", self.backing_path);
@@ -431,7 +451,7 @@ impl<'v> VMSetBuilder<'v> {
         let args = self
             .args
             .entry(attr.group.to_string())
-            .or_insert_with(|| vec!["-VMName".into(), self.vm.name.clone()]);
+            .or_insert_with(|| vec!["-VMName".into(), escape_arg(&self.vm.name, true)]);
         args.push(format!("-{}", attr.name));
         args.push(val.to_string());
         self
