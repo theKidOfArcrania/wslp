@@ -3,11 +3,13 @@
 #![feature(slice_split_once)]
 
 use anyhow::anyhow;
+use clap::Parser;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env::args,
+    env::set_current_dir,
     future::Future,
     net::SocketAddr,
+    path::Path,
     sync::Arc,
     task::Poll,
 };
@@ -23,9 +25,6 @@ use tokio::{
 use utils::FutureExt;
 use vmm::{PSBool, PSState, StartAction, StopAction};
 
-// 20000 diff ~ 8sec
-const DIFFICULTY: u32 = 20;
-
 const HOST_IP: &str = "10.69.0.1";
 const HOST_PORT_MULTIPLEX: u16 = 31337;
 const HOST_PORT_ENTRY: u16 = 20000;
@@ -37,9 +36,82 @@ mod vmm;
 mod vmm_async;
 pub mod wmi_ext;
 
+#[derive(Parser)]
+struct Arguments {
+    /// Don't copy the vhdx file.
+    #[clap(long)]
+    no_copy: bool,
+
+    #[clap(long, short = 'f', required = true)]
+    /// The vhdx file corresponding to the SKU that should be used for each
+    /// VM instance
+    vhdx_file: String,
+
+    /// The PoW difficulty that should be used for starting up each VM. Defaults
+    /// to a difficulty of 20000
+    // 20000 diff ~ 8sec
+    #[clap(long, short, default_value_t = 20000)]
+    difficulty: u32,
+
+    /// The directory path to dump all VMs in. By default this will be the
+    /// current directory. All the expected flag files should be located in this
+    /// directory.
+    vm_path: Option<String>,
+}
+
+#[derive(Default)]
+struct SharedSockets {
+    socks: BTreeMap<u128, net::TcpListener>,
+}
+
+impl SharedSockets {
+    fn accept(&self) -> SharedSocketsAccept {
+        SharedSocketsAccept(self)
+    }
+
+    async fn update(&mut self) -> anyhow::Result<()> {
+        let shared = sess::VM_SESS_MGR.shared_vms().await;
+        let our_shared: BTreeSet<u128> = self.socks.keys().copied().collect();
+
+        // Clean up any shared sessions that have been unregistered/terminated
+        for our_key in &our_shared {
+            if !shared.contains(our_key) {
+                self.socks.remove(our_key);
+            }
+        }
+
+        // Bind any new sockets that we recently registered
+        for their_key in shared {
+            if our_shared.contains(&their_key) {
+                continue;
+            }
+
+            let list = net::TcpListener::bind(("0.0.0.0", 0)).await?;
+            self.socks.insert(their_key, list);
+        }
+        Ok(())
+    }
+}
+
+struct SharedSocketsAccept<'b>(&'b SharedSockets);
+
+impl Future for SharedSocketsAccept<'_> {
+    type Output = io::Result<(net::TcpStream, SocketAddr, u128)>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        for (&key, sock) in &self.0.socks {
+            match sock.poll_accept(cx) {
+                Poll::Ready(res) => return Poll::Ready(res.map(|(tcp, addr)| (tcp, addr, key))),
+                Poll::Pending => (),
+            }
+        }
+        Poll::Pending
+    }
+}
+
 async fn partition_vm(
     name: String,
-    vhd_src: &str,
+    vhd_src: &Path,
     shared: bool,
 ) -> anyhow::Result<(u128, vmm::Vm)> {
     if !vhd_src.ends_with(".vhdx") {
@@ -60,7 +132,7 @@ async fn partition_vm(
                 if utils::interrupted() {
                     anyhow::bail!("VM {name}: Interrupted while copying files!");
                 }
-                &vhd_path
+                vhd_path.as_ref()
             };
 
             let key = sess::VM_SESS_MGR.register_new(shared).await;
@@ -133,14 +205,17 @@ async fn partition_vm(
     .await
 }
 
-async fn client_auth<R, W>(client: &mut utils::RW<R, W>) -> anyhow::Result<Option<bool>>
+async fn client_auth<R, W>(
+    difficulty: u32,
+    client: &mut utils::RW<R, W>,
+) -> anyhow::Result<Option<bool>>
 where
     R: AsyncBufReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
     // Call PoW
     let pow = kctf_pow::KctfPow::new();
-    let chall = pow.generate_challenge(DIFFICULTY);
+    let chall = pow.generate_challenge(difficulty);
     let prompt = format!("./kctf-pow solve {}\n> ", chall.to_string(),);
     match chall.check(client.recvlineafter(&prompt).await?) {
         Ok(true) => {}
@@ -167,9 +242,10 @@ where
 }
 
 async fn client_main(
+    difficulty: u32,
     client: &mut net::TcpStream,
     caddr: SocketAddr,
-    vhd_src: &str,
+    vhd_src: &Path,
 ) -> anyhow::Result<()> {
     let (read, write) = client.split();
     let mut client = utils::RW::new(io::BufReader::new(read), io::BufWriter::new(write));
@@ -178,7 +254,7 @@ async fn client_main(
     // times out in 1 min we just exit here.
     let timeout = time::Instant::now() + time::Duration::from_secs(60);
     let is_admin = tokio::select! {
-        auth_res = client_auth(&mut client) => {
+        auth_res = client_auth(difficulty, &mut client) => {
             match auth_res? {
                 None => return Ok(()),
                 Some(is_admin) => is_admin,
@@ -375,56 +451,6 @@ async fn shared_main(
     Ok(())
 }
 
-#[derive(Default)]
-struct SharedSockets {
-    socks: BTreeMap<u128, net::TcpListener>,
-}
-
-impl SharedSockets {
-    fn accept(&self) -> SharedSocketsAccept {
-        SharedSocketsAccept(self)
-    }
-
-    async fn update(&mut self) -> anyhow::Result<()> {
-        let shared = sess::VM_SESS_MGR.shared_vms().await;
-        let our_shared: BTreeSet<u128> = self.socks.keys().copied().collect();
-
-        // Clean up any shared sessions that have been unregistered/terminated
-        for our_key in &our_shared {
-            if !shared.contains(our_key) {
-                self.socks.remove(our_key);
-            }
-        }
-
-        // Bind any new sockets that we recently registered
-        for their_key in shared {
-            if our_shared.contains(&their_key) {
-                continue;
-            }
-
-            let list = net::TcpListener::bind(("0.0.0.0", 0)).await?;
-            self.socks.insert(their_key, list);
-        }
-        Ok(())
-    }
-}
-
-struct SharedSocketsAccept<'b>(&'b SharedSockets);
-
-impl Future for SharedSocketsAccept<'_> {
-    type Output = io::Result<(net::TcpStream, SocketAddr, u128)>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        for (&key, sock) in &self.0.socks {
-            match sock.poll_accept(cx) {
-                Poll::Ready(res) => return Poll::Ready(res.map(|(tcp, addr)| (tcp, addr, key))),
-                Poll::Pending => (),
-            }
-        }
-        Poll::Pending
-    }
-}
-
 async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyhow::Result<()> {
     let timeout = time::Instant::now() + time::Duration::from_secs(60);
     let mut port_data = sess::MultiplexAddr::default();
@@ -448,24 +474,27 @@ async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyho
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Arguments::parse();
+    let vhd_name = args.vhdx_file.clone();
+    let vhd_src = std::fs::canonicalize(args.vhdx_file)?;
+    if let Some(vm_path) = args.vm_path {
+        set_current_dir(vm_path)?;
+    }
+
     env_logger::init();
     utils::init();
 
     let conn_sock = net::TcpListener::bind(("0.0.0.0", HOST_PORT_ENTRY)).await?;
     let mut shared = SharedSockets::default();
 
-    let vhd_src = args()
-        .nth(1)
-        .ok_or_else(|| anyhow!("Expected positional argument for VHD"))?;
-
     match fs::try_exists(&vhd_src).await {
         Ok(true) => (),
         Ok(false) => {
-            log::error!("{vhd_src}: File does not exist");
+            log::error!("{vhd_name}: File does not exist");
             return Ok(());
         }
         Err(e) => {
-            log::error!("{vhd_src}: File does not exist: {e}");
+            log::error!("{vhd_name}: File does not exist: {e}");
             return Ok(());
         }
     }
@@ -540,7 +569,7 @@ exit 0
                 let (mut client, addr) = val?;
                 log::info!("Connected client: {addr}");
                 joins.spawn(async move {
-                    match client_main(&mut client, addr, &vhd_src).await {
+                    match client_main(args.difficulty, &mut client, addr, &vhd_src).await {
                         Ok(()) => {}
                         Err(e) => {
                             log::error!("client_main({addr}): {e}\n{}", e.backtrace());

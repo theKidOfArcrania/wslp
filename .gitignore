@@ -7,3 +7,4 @@
 copy.sh
 id_ed25519*
 target
+*.tar.gz

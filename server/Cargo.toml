@@ -24,5 +24,6 @@ serde = { version = "1.0.210", features = ["derive"] }
 windows = { version = "0.58.0", features = ["Win32_System_Variant"] }
 bytemuck = { version = "1.18.0", features = ["derive"] }
 cgmath = "0.18.0"
+clap = { version = "4.5.19", features = ["derive"] }
 #png = "0.17.14"
 
