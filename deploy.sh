@@ -8,6 +8,8 @@ wsl/disk.img
 wsl/run.sh
 wsl/run_shared.sh
 wsl/README.md
+sku/setup.ps1
+sku/unattend.xml
 server/Cargo.toml
 server/Cargo.lock
 server/src/wmi_ext.rs

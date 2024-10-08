@@ -97,7 +97,6 @@ impl<F: Seek + Read> FileDelta<F> {
     }
 
     fn copy_page_and_offset(&mut self, offset: u64) -> io::Result<(usize, u32, PageData)> {
-        println!("copy_page_and_offset: 0x{offset:016x}");
         let (poff, page_inds) = split_levels(offset)?;
         let mut cur_num = 0;
         let mut created = false;
@@ -111,10 +110,6 @@ impl<F: Seek + Read> FileDelta<F> {
                 self.write_page(cur_num, &page)?;
                 created = true;
             }
-            println!(
-                "  [{page_ind}] -> {new_num}{}",
-                if created { "*" } else { "" }
-            );
             cur_num = new_num;
         }
 
