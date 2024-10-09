@@ -4,9 +4,10 @@ FILES="""
 wsl/containerd/Makefile
 wsl/containerd/containerd
 wsl/containerd/main.c
+wsl/runner/Makefile
+wsl/runner/runner
+wsl/runner/runner.c
 wsl/disk.img
-wsl/run.sh
-wsl/run_shared.sh
 wsl/README.md
 sku/setup.ps1
 sku/unattend.xml

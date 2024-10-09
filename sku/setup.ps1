@@ -58,16 +58,21 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
   }
 
   Write-Host "[*] Checking files..."
-  $WSLFiles = @(
+  $OEMFiles = @(
     "$WSLPath\containerd\containerd",
     "$WSLPath\disk.img",
     "$WSLPath\run_shared.sh"
-    "$PSScriptRoot\install.ps1"
+    "$PSScriptRoot\install.sh",
+    "$PSScriptRoot\install.ps1",
+    "$PSScriptRoot\..\flag1.txt",
+    "$PSScriptRoot\..\flag2.1.txt",
+    "$PSScriptRoot\..\flag2.2.txt"
   )
   $Unattend = "$PSScriptRoot\unattend.xml"
   $EFIRoot = "$PSScriptRoot\efi"
 
-  $WSLFiles |% { $x = Get-Item $_ }
+  $OEMFiles |% { $x = Get-Item $_ }
+  $FlagFiles |% { $x = Get-Item $_ }
   $x = Get-Item $Unattend
   $x = Get-Item $EFIRoot
 
@@ -110,11 +115,11 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
     }
 
     Write-Host "[*] Copying OEM files"
-    $OEMBase = "${letter_out}:\sources\`$`$OEM`$`$\`$1"
+    $OEMBase = "${letter_out}:\sources\`$OEM`$\`$1"
     $x = New-Item -ItemType d "$OEMBase\Windows\Panther"
     $x = New-Item -ItemType d "$OEMBase\OEM"
     $x = Copy-Item $Unattend "$OEMBase\Windows\Panther\"
-    $WSLFiles |% { Copy-Item $_ "$OEMBase\OEM" }
+    $OEMFiles |% { Copy-Item $_ "$OEMBase\OEM" }
     Write-Host "[*] Installation media created at: $InstallVHDX"
   } finally {
     $diskimg_out | Dismount-DiskImage | Out-Null
