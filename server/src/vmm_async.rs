@@ -14,6 +14,8 @@ use tokio::{
 
 use crate::{sess, utils, vmm, wmi_ext};
 
+// TODO: we need to change this to be matching the profile pic which is more
+// stable regardless of the theme that is being used
 const COLOR_LOGIN: Vector3<f32> = Vector3::new(0.0, 0.11, 0.533);
 const COLOR_LOGIN2: Vector3<f32> = Vector3::new(0.031, 0.169, 0.788);
 const COLOR_LOGIN_FIELD: Vector3<f32> = Vector3::new(0.094, 0.11, 0.22);

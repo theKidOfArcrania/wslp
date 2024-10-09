@@ -71,6 +71,7 @@ int main(int argc, char **argv) {
   memset(&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
   CHK(inet_aton, "10.69.0.1", &SERVER_ADDR.sin_addr);
   SERVER_ADDR.sin_port = htons(31337);
+  SERVER_ADDR.sin_family = AF_INET;
 
   struct multiplex_addr mpa;
   if (sscanf(argv[1],"%lx:%lx:%lx:%lx", &mpa.key_lower,

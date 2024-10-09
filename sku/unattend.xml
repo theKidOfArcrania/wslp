@@ -19,8 +19,8 @@
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>1</Order>
-                    <Path>powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Unrestricted C:\OEM\install.ps1</Path>
-                    <Description>Auto-run embedded script</Description>
+                    <Path>powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Unrestricted C:\OEM\install_specialize.ps1</Path>
+                    <Description></Description>
                     <WillReboot>OnRequest</WillReboot>
                 </RunSynchronousCommand>
             </RunSynchronous>
@@ -28,19 +28,15 @@
     </settings>
     <settings pass="oobeSystem">
         <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-            <AutoLogon>
-                <Password>
-                    <Value>Fddd</Value>
-                    <PlainText>true</PlainText>
-                </Password>
-                <Username>ctf</Username>
-                <Enabled>true</Enabled>
-            </AutoLogon>
             <FirstLogonCommands>
                 <SynchronousCommand wcm:action="add">
                     <CommandLine>powershell.exe -Command &quot;Set-ExecutionPolicy Unrestricted -Force&quot;</CommandLine>
                     <Order>1</Order>
                     <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Unrestricted C:\OEM\install_user.ps1</CommandLine>
                 </SynchronousCommand>
             </FirstLogonCommands>
             <OOBE>
@@ -60,7 +56,7 @@
                 <LocalAccounts>
                     <LocalAccount wcm:action="add">
                         <Password>
-                            <Value>Fddd</Value>
+                            <Value>REPLACE_ME</Value>
                             <PlainText>true</PlainText>
                         </Password>
                         <Name>ctf</Name>

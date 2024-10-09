@@ -7,6 +7,7 @@ Param (
   [string] $InstallVHDX,
   [Parameter(mandatory=$true)]
   [string] $OutputVHDX,
+  [string] $Password = "password",
   [string] $SwitchName = "Default Switch"
 )
 
@@ -117,7 +118,8 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
     $OEMBase = "${letter_out}:\sources\`$OEM`$\`$1"
     $x = New-Item -ItemType d "$OEMBase\Windows\Panther"
     $x = New-Item -ItemType d "$OEMBase\OEM"
-    $x = Copy-Item $Unattend "$OEMBase\Windows\Panther\"
+    $x = (Get-Content -Raw $Unattend) -replace 'REPLACE_ME', "$Password" |
+      Set-Content -NoNewLine "$OEMBase\Windows\Panther\"
     $OEMFiles |% { Copy-Item $_ "$OEMBase\OEM" }
     Write-Host "[*] Installation media created at: $InstallVHDX"
   } finally {

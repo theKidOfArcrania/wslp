@@ -1,6 +1,6 @@
 CFLAGS=-fstack-protector-all -fPIC
 runner: runner.o
-	$(CC) -static-pie -o $@ $^
+	$(CC) -o $@ $^
 
 clean:
 	rm runner *.o
