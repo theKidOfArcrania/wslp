@@ -113,6 +113,7 @@ async fn partition_vm(
     name: String,
     vhd_src: &Path,
     shared: bool,
+    no_copy: bool,
 ) -> anyhow::Result<(u128, vmm::Vm)> {
     if !vhd_src.ends_with(".vhdx") {
         anyhow::bail!("VHD should end in .vhdx");
@@ -123,8 +124,7 @@ async fn partition_vm(
     utils::try_finally(
         async {
             fs::create_dir(&name).await?;
-            let vhd_path = if vhd_src.contains("debug") {
-                log::warn!("Skipping copying base files because vhd is debug");
+            let vhd_path = if no_copy {
                 vhd_src
             } else {
                 log::info!("VM {name}: Copying base files");
@@ -146,7 +146,12 @@ async fn partition_vm(
                 .name(name.clone())
                 .use_gen2()
                 .memory_startup_bytes("1GB".into())
-                .existing_vhd(vhd_path.into())
+                .existing_vhd(
+                    vhd_path
+                        .to_str()
+                        .ok_or_else(|| anyhow!("VM {name}: not a valid VHD path"))?
+                        .into(),
+                )
                 .path(format!("{name}/vm"))
                 .boot_device(vmm::BootDevice::VHD)
                 .build()
@@ -246,6 +251,7 @@ async fn client_main(
     client: &mut net::TcpStream,
     caddr: SocketAddr,
     vhd_src: &Path,
+    no_copy: bool,
 ) -> anyhow::Result<()> {
     let (read, write) = client.split();
     let mut client = utils::RW::new(io::BufReader::new(read), io::BufWriter::new(write));
@@ -301,7 +307,7 @@ async fn client_main(
     log::info!("{caddr}: Partitioning new instance: {vm_name}");
 
     let vm_ctx = format!("VM {vm_name}");
-    let (key, vm) = partition_vm(vm_name, vhd_src, is_admin).await?;
+    let (key, vm) = partition_vm(vm_name, vhd_src, is_admin, no_copy).await?;
     utils::try_finally(
         async {
             log::info!("{vm_ctx}: Starting VM...");
@@ -569,7 +575,7 @@ exit 0
                 let (mut client, addr) = val?;
                 log::info!("Connected client: {addr}");
                 joins.spawn(async move {
-                    match client_main(args.difficulty, &mut client, addr, &vhd_src).await {
+                    match client_main(args.difficulty, &mut client, addr, &vhd_src, args.no_copy).await {
                         Ok(()) => {}
                         Err(e) => {
                             log::error!("client_main({addr}): {e}\n{}", e.backtrace());

@@ -20,7 +20,6 @@ use crate::target::windows::PsScriptImpl;
 pub struct PsScript {
     pub(crate) args: Vec<&'static str>,
     pub(crate) hidden: bool,
-    pub(crate) print_commands: bool,
     pub(crate) err_passthru: bool,
 }
 

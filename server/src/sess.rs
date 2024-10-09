@@ -14,23 +14,24 @@ use tokio::{
 #[repr(C)]
 pub struct MultiplexAddr {
     key: u128,
-    port: usize,
-    port_key: usize,
+    port: u64,
+    port_key: u64,
 }
 
-impl MultiplexAddr {
-    pub fn bash_string(&self) -> String {
-        let mut addr = String::with_capacity(size_of::<MultiplexAddr>() * 4);
-        for b in bytemuck::bytes_of(self) {
-            use std::fmt::Write;
-            write!(addr, "\\x{b:02x}").unwrap();
-        }
-        addr
+impl std::fmt::Display for MultiplexAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let key_low = self.key as u64;
+        let key_high = (self.key >> 64) as u64;
+        write!(
+            f,
+            "{key_low:016x}:{key_high:016x}:{:016x}:{:016x}",
+            self.port, self.port_key
+        )
     }
 }
 
 enum PeerState {
-    Connecting(usize),
+    Connecting(u64),
     PartialConnected(net::TcpStream),
     FullyConnected,
 }
@@ -139,8 +140,7 @@ impl VmSessionsMgr {
             anyhow::bail!("VM 0x{key:032x} server peer has not been initialized")
         };
 
-        server.write_all(mpa.bash_string().as_bytes()).await?;
-        server.write_u8(b'\n').await?;
+        server.write_all(bytemuck::bytes_of(&mpa)).await?;
         server.flush().await?;
 
         self.wait_for_peer(key, mpa.port).await
@@ -157,7 +157,7 @@ impl VmSessionsMgr {
         sess.peers.push(PeerState::Connecting(port_key));
         Ok(MultiplexAddr {
             key: *key,
-            port: sess.peers.len() - 1,
+            port: sess.peers.len() as u64 - 1,
             port_key,
         })
     }
@@ -172,10 +172,14 @@ impl VmSessionsMgr {
             anyhow::bail!("VM 0x{:032x} does not exist", conn.key);
         };
 
-        let Some(peer) = sess.peers.get_mut(conn.port).filter(|peer| match peer {
-            PeerState::Connecting(port_key) => conn.port_key == *port_key,
-            _ => false,
-        }) else {
+        let Some(peer) = sess
+            .peers
+            .get_mut(conn.port as usize)
+            .filter(|peer| match peer {
+                PeerState::Connecting(port_key) => conn.port_key == *port_key,
+                _ => false,
+            })
+        else {
             anyhow::bail!(
                 "Invalid port {:032x}:{}:{:016x}",
                 conn.key,
@@ -190,7 +194,7 @@ impl VmSessionsMgr {
         Ok(())
     }
 
-    pub async fn wait_for_peer(&self, key: &u128, port: usize) -> anyhow::Result<net::TcpStream> {
+    pub async fn wait_for_peer(&self, key: &u128, port: u64) -> anyhow::Result<net::TcpStream> {
         log::info!("{key:032x}: Waiting for peer connection to port {port}");
         loop {
             let mut sessions = self.sessions.lock().await;
@@ -198,7 +202,7 @@ impl VmSessionsMgr {
                 anyhow::bail!("VM 0x{key:032x} does not exist");
             };
 
-            let Some(peer) = sess.peers.get_mut(port) else {
+            let Some(peer) = sess.peers.get_mut(port as usize) else {
                 anyhow::bail!("Invalid port {key:032x}:{port}");
             };
 

@@ -9,13 +9,12 @@ pub struct PsScriptBuilder {
     no_profile: bool,
     non_interactive: bool,
     hidden: bool,
-    print_commands: bool,
     err_passthru: bool,
 }
 
 impl PsScriptBuilder {
     /// Creates a default builder with no_profile, non_interactive and hidden
-    /// options set to true and print_commands set to false.
+    /// options set to true.
     pub fn new() -> Self {
         Self::default()
     }
@@ -48,13 +47,6 @@ impl PsScriptBuilder {
         self
     }
 
-    /// If set to `true` it will print each command to `stdout` as they're run.
-    /// This can be particularely useful when debugging.
-    pub fn print_commands(mut self, flag: bool) -> Self {
-        self.print_commands = flag;
-        self
-    }
-
     pub fn build(self) -> PsScript {
         let mut args = self.args;
         if self.non_interactive {
@@ -68,7 +60,6 @@ impl PsScriptBuilder {
         PsScript {
             args: args.make_contiguous().to_vec(),
             hidden: self.hidden,
-            print_commands: self.print_commands,
             err_passthru: self.err_passthru,
         }
     }
@@ -76,7 +67,7 @@ impl PsScriptBuilder {
 
 impl Default for PsScriptBuilder {
     /// Creates a default builder with `no_profile`, `non_interactive` and `hidden`
-    /// options set to `true` and `print_commands` set to `false`.
+    /// options set to `true`.
     fn default() -> Self {
         let mut args = VecDeque::new();
         args.push_back("-Execution");
@@ -88,7 +79,6 @@ impl Default for PsScriptBuilder {
             no_profile: true,
             non_interactive: true,
             hidden: true,
-            print_commands: false,
             err_passthru: false,
         }
     }

@@ -29,7 +29,6 @@ pub fn create_ps() -> PsScript {
         .non_interactive(false)
         .err_passthru(true)
         .no_profile(true)
-        .print_commands(false)
         .build()
 }
 

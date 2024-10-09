@@ -1,26 +1,18 @@
-use anyhow::anyhow;
-use cgmath::{MetricSpace, Vector2, Vector3, Zero};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    env::args,
     future::Future,
-    net::SocketAddr,
     ops::DerefMut,
     pin::Pin,
     process::exit,
     str::from_utf8,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex as SMutex, OnceLock,
+        Arc, OnceLock,
     },
-    task::Poll,
 };
 use tokio::{
-    fs,
-    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
-    net, signal,
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
+    signal,
     sync::{Mutex, Notify},
-    task::{spawn_blocking, JoinHandle, JoinSet},
     time,
 };
 
@@ -28,8 +20,6 @@ const MAX_BUFFER: usize = 0x1000;
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static INTERRUPTED_NOTIFY: Notify = Notify::const_new();
-
-static FLAGS: OnceLock<[String; 2]> = OnceLock::new();
 
 pub fn init() {
     tokio::spawn(async {

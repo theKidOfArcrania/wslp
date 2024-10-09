@@ -330,8 +330,7 @@ impl vmm::Vm {
         log::info!("VM {}: Launching debian", self.name());
         let flag1 = utils::get_flag1()?;
         kb.type_text(format!(
-            "debian -c \"echo 'RUNNING STUFF'; ~/run_shared.sh '{flag1}' '{}'; sleep 100\"",
-            conn.bash_string(),
+            "debian -c \"echo 'RUNNING STUFF'; ~/run_shared.sh '{flag1}' '{conn}'; sleep 100\"",
         ))
         .await?;
 
