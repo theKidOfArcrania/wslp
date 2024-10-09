@@ -1,5 +1,6 @@
 /wsl/disk
 /wsl/containerd/containerd
+/wsl/runner/runner
 /wsl/disk.img
 *.o
 *.d

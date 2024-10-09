@@ -330,11 +330,7 @@ impl vmm::Vm {
         .await?;
 
         log::info!("VM {}: Launching debian", self.name());
-        let flag1 = utils::get_flag1()?;
-        kb.type_text(format!(
-            "debian -c \"echo 'RUNNING STUFF'; ~/run_shared.sh '{flag1}' '{conn}'; sleep 100\"",
-        ))
-        .await?;
+        kb.type_text(format!("debian run /home/ctf/runner {conn}")).await?;
 
         time::sleep(time::Duration::from_secs(3)).await;
         kb.press_key(0xD).await?; // VK_RETURN

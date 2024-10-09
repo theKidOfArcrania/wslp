@@ -64,7 +64,8 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
     "$WSLPath\disk.img",
     "$WSLPath\runner\runner",
     "$PSScriptRoot\install.sh",
-    "$PSScriptRoot\install.ps1",
+    "$PSScriptRoot\install_user.ps1",
+    "$PSScriptRoot\install_specialize.ps1",
     "$PSScriptRoot\..\flag1.txt",
     "$PSScriptRoot\..\flag2.1.txt",
     "$PSScriptRoot\..\flag2.2.txt"
@@ -119,7 +120,7 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
     $x = New-Item -ItemType d "$OEMBase\Windows\Panther"
     $x = New-Item -ItemType d "$OEMBase\OEM"
     $x = (Get-Content -Raw $Unattend) -replace 'REPLACE_ME', "$Password" |
-      Set-Content -NoNewLine "$OEMBase\Windows\Panther\"
+      Set-Content -NoNewLine "$OEMBase\Windows\Panther\unattend.xml"
     $OEMFiles |% { Copy-Item $_ "$OEMBase\OEM" }
     Write-Host "[*] Installation media created at: $InstallVHDX"
   } finally {

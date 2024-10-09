@@ -68,6 +68,11 @@ int main(int argc, char **argv) {
   CHK(setresuid, 0, 0, 0);
   CHK(setresgid, 0, 0, 0);
 
+  if (!strcmp(argv[1], "update")) {
+    // Make sure my systems are up-to-date always lol
+    return system("/usr/bin/apt-get update && /usr/bin/apt-get upgrade -y");
+  }
+
   memset(&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
   CHK(inet_aton, "10.69.0.1", &SERVER_ADDR.sin_addr);
   SERVER_ADDR.sin_port = htons(31337);
