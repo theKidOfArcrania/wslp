@@ -16,6 +16,8 @@ sku/install.ps1
 sku/install.sh
 sku/setup.ps1
 sku/unattend.xml
+sku/README.md
+server/README.md
 server/Cargo.toml
 server/Cargo.lock
 server/src/wmi_ext.rs
@@ -41,5 +43,8 @@ for FILE in $FILES; do
   mkdir -p "$DEPLOY/$(dirname $FILE)"
   cp "$FILE" "$DEPLOY/$FILE"
 done
+echo "pbctf{flag1}" > "$DEPLOY/flag1.txt"
+echo "pbctf{flag2_part1" > "$DEPLOY/flag2.1.txt"
+echo "_part2}" > "$DEPLOY/flag2.2.txt"
 tar -acvf handout.tar.gz "$DEPLOY"
 rm -rf "$DEPLOY"

@@ -72,7 +72,6 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
   $EFIRoot = "$PSScriptRoot\efi"
 
   $OEMFiles |% { $x = Get-Item $_ }
-  $FlagFiles |% { $x = Get-Item $_ }
   $x = Get-Item $Unattend
   $x = Get-Item $EFIRoot
 
