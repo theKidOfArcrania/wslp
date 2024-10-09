@@ -20,7 +20,7 @@ if (-Not (Get-VMSwitch |? { $_.Name -Eq $switchName })) {
 
 Write-Host "#[info] Assigning IP Address for switch"
 $ifIndex = (Get-NetAdapter |? { $_.Name -Like "*$switchName*" })[0].ifIndex
-if (-Not (Get-NetIpAddress -InterfaceIndex 6 |? { $_.IPAddress -Eq "10.69.0.1"})) {
+if (-Not (Get-NetIpAddress -InterfaceIndex $ifIndex |? { $_.IPAddress -Eq "10.69.0.1"})) {
     New-NetIpAddress -IPAddress 10.69.0.1 -InterfaceIndex $ifIndex -PrefixLength 16
 }
 
