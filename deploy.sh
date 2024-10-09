@@ -12,7 +12,8 @@ wsl/README.md
 sku/efi/README.txt
 sku/efi/EFI/Boot/bootx64.efi
 sku/efi/EFI/Rufus/ntfs_x64.efi
-sku/install.ps1
+sku/install_user.ps1
+sku/install_specialize.ps1
 sku/install.sh
 sku/setup.ps1
 sku/unattend.xml
