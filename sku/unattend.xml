@@ -19,7 +19,7 @@
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>1</Order>
-                    <Path>powershell.exe -NoProfile -WindowStyle Hidden -Command &quot;$xml = [xml]::new(); $xml.Load(&apos;C:\Windows\Panther\unattend.xml&apos;); $sb = [scriptblock]::Create( $xml.unattend.Extensions.Autorun ); Invoke-Command -ScriptBlock $sb -ArgumentList $xml;&quot;</Path>
+                    <Path>powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Unrestricted C:\OEM\install.ps1</Path>
                     <Description>Auto-run embedded script</Description>
                     <WillReboot>OnRequest</WillReboot>
                 </RunSynchronousCommand>
@@ -72,18 +72,4 @@
         </component>
     </settings>
     <cpi:offlineImage cpi:source="wim:c:/win11/sources/install.wim#Windows 11 Home" xmlns:cpi="urn:schemas-microsoft-com:cpi" />
-    <Extensions>
-        <Autorun>
-$ErrorActionPreference = "Stop"
-try {
-    if ((Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux).State -Ne 'Enabled') {
-        Enable-WindowsOptionalFeature -Online -NoRestart -FeatureName Microsoft-Windows-Subsystem-Linux -All
-        exit 2 # reboot and restart this command
-    }
-    wsl --update --inbox
-} catch {
-    exit 3
-}
-        </Autorun>
-    </Extensions>
 </unattend>

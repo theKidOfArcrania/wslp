@@ -62,6 +62,7 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
     "$WSLPath\containerd\containerd",
     "$WSLPath\disk.img",
     "$WSLPath\run_shared.sh"
+    "$PSScriptRoot\install.ps1"
   )
   $Unattend = "$PSScriptRoot\unattend.xml"
   $EFIRoot = "$PSScriptRoot\efi"
