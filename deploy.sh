@@ -18,24 +18,12 @@ sku/install.sh
 sku/setup.ps1
 sku/unattend.xml
 sku/README.md
-server/README.md
-server/Cargo.toml
-server/Cargo.lock
-server/src/wmi_ext.rs
-server/src/main.rs
-server/src/instances.rs
-server/src/sess.rs
-server/src/vmm.rs
-server/src/vmm_async.rs
-server/src/utils.rs
-server/crates/powershell-script/src/error.rs
-server/crates/powershell-script/src/builder.rs
-server/crates/powershell-script/src/target/unix.rs
-server/crates/powershell-script/src/target/windows.rs
-server/crates/powershell-script/src/output.rs
-server/crates/powershell-script/src/target.rs
-server/crates/powershell-script/src/psscript.rs
-server/crates/powershell-script/src/lib.rs
+serverlite/Cargo.lock
+serverlite/Cargo.toml
+serverlite/src/main.rs
+serverlite/src/sess.rs
+serverlite/src/utils.rs
+serverlite/README.md
 """
 
 DEPLOY=wslp
@@ -48,4 +36,8 @@ echo "pbctf{flag1}" > "$DEPLOY/flag1.txt"
 echo "pbctf{flag2_part1" > "$DEPLOY/flag2.1.txt"
 echo "_part2}" > "$DEPLOY/flag2.2.txt"
 tar -acvf handout.tar.gz "$DEPLOY"
+
+cp flag1.txt flag2.1.txt flag2.2.txt "$DEPLOY/"
+tar -acvf handout_prod.tar.gz "$DEPLOY"
+
 rm -rf "$DEPLOY"

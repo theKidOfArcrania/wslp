@@ -1,1 +1,1 @@
-pbctf{wslp_more_like_we_sell_privescs!_
+pbctf{wslp_more_like_we_sell_local_privescs!_
