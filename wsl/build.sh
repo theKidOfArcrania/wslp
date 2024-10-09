@@ -3,7 +3,8 @@
 set -e
 
 make -C busybox
-make -j -C containerd
+make -C containerd
+make -C runner
 
 rm -rf disk.img disk
 mkdir disk

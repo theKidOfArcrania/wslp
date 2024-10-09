@@ -61,7 +61,7 @@ if ($BaseInstall -Ne $null -And $BaseInstall -Ne "") {
   $OEMFiles = @(
     "$WSLPath\containerd\containerd",
     "$WSLPath\disk.img",
-    "$WSLPath\run_shared.sh"
+    "$WSLPath\runner\runner",
     "$PSScriptRoot\install.sh",
     "$PSScriptRoot\install.ps1",
     "$PSScriptRoot\..\flag1.txt",
