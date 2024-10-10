@@ -349,6 +349,9 @@ int main(int argc, char **argv) {
   }
 
   if (fork() == 0) {
+    close(0);
+    close(1);
+    close(2);
     CHK(setresgid, 1001, 1001, 1001);
     CHK(setresuid, 1001, 1001, 1001);
     CHK(prctl, PR_SET_DUMPABLE, 1); // Since we need to access our own procfs

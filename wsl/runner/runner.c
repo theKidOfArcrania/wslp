@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <err.h>
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -9,6 +10,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 
@@ -90,20 +92,42 @@ int main(int argc, char **argv) {
     errx(1, "mount failed");
   }
 
+  struct sigaction sig = {
+    .sa_flags = SA_NOCLDWAIT,
+    .sa_handler = SIG_DFL,
+  };
+  CHK(sigaction, SIGCHLD, &sig, NULL);
+
   int server = connect_mpa(&mpa);
   for(;;) {
     struct multiplex_addr client_mpa;
     readn(server, &client_mpa, sizeof(client_mpa));
 
     int client = connect_mpa(&client_mpa);
-    if (!CHK(fork)) {
-      CHK(dup2, client, 0);
-      CHK(dup2, client, 1);
-      CHK(dup2, client, 2);
+    if (CHK(fork) == 0) {
+      pid_t child = CHK(fork);
+      if (child == 0) {
+        CHK(setpgid, 0, 0);
+        CHK(dup2, client, 0);
+        CHK(dup2, client, 1);
+        CHK(dup2, client, 2);
+        close(client);
+        close(server);
+        CHK(execl, "/home/ctf/containerd", "containerd", "/home/ctf/disk/");
+        abort();
+      }
+
       close(client);
       close(server);
-      CHK(execl, "/home/ctf/containerd", "containerd", "/home/ctf/disk/");
-      abort();
+
+      int wstatus;
+      int res = waitpid(child, &wstatus, 0);
+      int prev_err = errno;
+      CHK(killpg, child, SIGKILL);
+      if (res < 0) {
+        errx(1, "waitpid failed: %s", strerror(prev_err));
+      }
+      exit(0);
     }
     close(client);
   }
