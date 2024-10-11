@@ -26,6 +26,11 @@ pub fn init() {
     });
 }
 
+pub fn signal_interrupt() {
+    INTERRUPTED.store(true, Ordering::Relaxed);
+    INTERRUPTED_NOTIFY.notify_waiters();
+}
+
 pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::Relaxed)
 }

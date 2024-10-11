@@ -142,11 +142,14 @@ impl VmSessionsMgr {
 
         server.write_all(bytemuck::bytes_of(&mpa)).await?;
         server.flush().await?;
+        drop(sessions);
 
         self.wait_for_peer(key, mpa.port).await
     }
 
     pub async fn open_peer(&self, key: &u128) -> anyhow::Result<MultiplexAddr> {
+        log::info!("Opening peer connection in VM 0x{key:032x}");
+
         let mut sessions = self.sessions.lock().await;
         let Some(sess) = sessions.get_mut(&key) else {
             anyhow::bail!("VM 0x{key:032x} does not exist");
@@ -208,6 +211,13 @@ impl VmSessionsMgr {
 
             let mut cur_peer = PeerState::FullyConnected;
             swap(peer, &mut cur_peer);
+
+            let state = match &cur_peer {
+                PeerState::Connecting(_) => "connecting",
+                PeerState::PartialConnected(_) => "connected",
+                PeerState::FullyConnected => "ERROR",
+            };
+            log::info!("{key:032x}:{port}: State: {state}");
 
             match cur_peer {
                 PeerState::Connecting(client) => {

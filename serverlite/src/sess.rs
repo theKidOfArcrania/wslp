@@ -1,7 +1,8 @@
 use rand::Rng;
 use std::{
     collections::BTreeMap,
-    mem::swap, sync::atomic::{AtomicU64, Ordering},
+    mem::swap,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::{
     io::AsyncWriteExt,
@@ -99,6 +100,7 @@ impl VmSessionsMgr {
 
         server.write_all(bytemuck::bytes_of(&mpa)).await?;
         server.flush().await?;
+        drop(sessions);
 
         self.wait_for_peer(key, mpa.port).await
     }
@@ -165,6 +167,13 @@ impl VmSessionsMgr {
 
             let mut cur_peer = PeerState::FullyConnected;
             swap(peer, &mut cur_peer);
+
+            let state = match &cur_peer {
+                PeerState::Connecting(_) => "connecting",
+                PeerState::PartialConnected(_) => "connected",
+                PeerState::FullyConnected => "ERROR",
+            };
+            log::info!("{key:032x}:{port}: State: {state}");
 
             match cur_peer {
                 PeerState::Connecting(client) => {

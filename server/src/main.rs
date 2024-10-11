@@ -396,6 +396,8 @@ where
     R: AsyncBufReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
+    log::info!("{caddr}: Connecting to VM 0x{key:032x}");
+
     let mut vm_conn = sess::VM_SESS_MGR.connect_client_peer(key).await?;
     let mut buffer = vec![0u8; 0x1000];
     let mut buffer2 = vec![0u8; 0x1000];
@@ -427,8 +429,9 @@ where
                 client.write.shutdown().await?;
             } else {
                 log::debug!(
-                    "VM wrote: {}\n  {buffer:?}",
-                    String::from_utf8_lossy(&buffer),
+                    "VM wrote: {}\n  {:?}",
+                    String::from_utf8_lossy(&buffer[0..read]),
+                    &buffer[0..read]
                 );
                 client.write.write(&buffer[0..read]).await?;
             }
@@ -437,8 +440,9 @@ where
                 vm_conn.shutdown().await?;
             } else {
                 log::debug!(
-                    "Client wrote: {}\n  {buffer:?}",
-                    String::from_utf8_lossy(&buffer),
+                    "Client wrote: {}\n  {:?}",
+                    String::from_utf8_lossy(&buffer2[0..read]),
+                    &buffer2[0..read]
                 );
                 vm_conn.write(&buffer2[0..read]).await?;
             }
@@ -460,11 +464,14 @@ async fn shared_main(
 async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyhow::Result<()> {
     let timeout = time::Instant::now() + time::Duration::from_secs(60);
     let mut port_data = sess::MultiplexAddr::default();
+
     client
         .read_exact(bytemuck::bytes_of_mut(&mut port_data))
         .timed(timeout)
         .await
         .ok_or_else(|| anyhow!("{caddr}: VM timeout while reading multiplex connection info"))??;
+
+    log::info!("{caddr}: Connecting to {port_data}");
 
     let mut stream = Some(client);
     let res = sess::VM_SESS_MGR
@@ -552,6 +559,7 @@ exit 0
 
     let multiplex_sock = net::TcpListener::bind((HOST_IP, HOST_PORT_MULTIPLEX)).await?;
     let mut joins = JoinSet::new();
+    joins.spawn(utils::wait_for_interrupt()); // to ensure this never returns None
     loop {
         match shared.update().await {
             Ok(_) => {}
@@ -562,6 +570,7 @@ exit 0
             val = multiplex_sock.accept() => {
                 let (client, addr) = val?;
                 joins.spawn(async move {
+                    log::info!("{addr}: Opened multiplex connection");
                     match multiplex_main(client, &addr).await {
                         Ok(()) => {}
                         Err(e) => {
@@ -590,7 +599,7 @@ exit 0
             val = shared.accept() => {
                 let (mut client, addr, key) = val?;
                 joins.spawn(async move {
-                    log::info!("Connected shared vm: {addr}");
+                    log::info!("{addr} Connected to shared VM 0x{key:032x}");
                     match shared_main(&mut client, addr, &key).await {
                         Ok(()) => {}
                         Err(e) => {

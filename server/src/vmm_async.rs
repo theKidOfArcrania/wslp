@@ -330,7 +330,8 @@ impl vmm::Vm {
         .await?;
 
         log::info!("VM {}: Launching debian", self.name());
-        kb.type_text(format!("debian run /home/ctf/runner {conn}")).await?;
+        kb.type_text(format!("debian run /home/ctf/runner {conn}"))
+            .await?;
 
         time::sleep(time::Duration::from_secs(3)).await;
         kb.press_key(0xD).await?; // VK_RETURN

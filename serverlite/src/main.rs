@@ -25,6 +25,8 @@ async fn connect_vm(
     caddr: SocketAddr,
     client: &mut net::TcpStream,
 ) -> Result<(), anyhow::Error> {
+    log::info!("{caddr}: Connecting to VM 0x{key:032x}");
+
     let mut vm_conn = sess::VM_SESS_MGR.connect_client_peer(key).await?;
     let mut buffer = vec![0u8; 0x1000];
     let mut buffer2 = vec![0u8; 0x1000];
@@ -55,10 +57,7 @@ async fn connect_vm(
             if read == 0 {
                 client.shutdown().await?;
             } else {
-                log::debug!(
-                    "VM wrote: {}\n  {buffer:?}",
-                    String::from_utf8_lossy(&buffer),
-                );
+                log::debug!("VM wrote: {}", String::from_utf8_lossy(&buffer[0..read]),);
                 client.write_all(&buffer[0..read]).await?;
             }
         } else {
@@ -66,8 +65,8 @@ async fn connect_vm(
                 vm_conn.shutdown().await?;
             } else {
                 log::debug!(
-                    "Client wrote: {}\n  {buffer:?}",
-                    String::from_utf8_lossy(&buffer),
+                    "Client wrote: {}",
+                    String::from_utf8_lossy(&buffer2[0..read]),
                 );
                 vm_conn.write_all(&buffer2[0..read]).await?;
             }
@@ -87,11 +86,14 @@ async fn shared_main(
 async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyhow::Result<()> {
     let timeout = time::Instant::now() + time::Duration::from_secs(60);
     let mut port_data = sess::MultiplexAddr::default();
+
+    log::info!("{caddr}: Opened connection");
     client
         .read_exact(bytemuck::bytes_of_mut(&mut port_data))
         .timed(timeout)
         .await
         .ok_or_else(|| anyhow!("{caddr}: VM timeout while reading multiplex connection info"))??;
+    log::info!("{caddr}: Connecting to {port_data}");
 
     let mut stream = Some(client);
     let res = sess::VM_SESS_MGR
@@ -114,11 +116,21 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Connecting to VM. Make sure that the VM is on a network interface where our IP is {HOST_IP}.");
     let multiplex_sock = net::TcpListener::bind((HOST_IP, HOST_PORT_MULTIPLEX)).await?;
-    let key = sess::VM_SESS_MGR.register_new().await;
-    sess::VM_SESS_MGR.connect_server_peer(&key).await?;
+
+    let mut joins = JoinSet::new();
+    joins.spawn(utils::wait_for_interrupt());
+    joins.spawn(async move {
+        let key = sess::VM_SESS_MGR.register_new().await;
+        match sess::VM_SESS_MGR.connect_server_peer(&key).await {
+            Ok(()) => {}
+            Err(e) => {
+                log::error!("Failed to connect to server: {e}\n{}", e.backtrace());
+                utils::signal_interrupt();
+            }
+        }
+    });
 
     log::info!("Waiting for connections!");
-    let mut joins = JoinSet::new();
     loop {
         tokio::select! {
             val = multiplex_sock.accept() => {
