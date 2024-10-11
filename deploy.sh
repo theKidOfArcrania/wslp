@@ -32,8 +32,8 @@ for FILE in $FILES; do
   mkdir -p "$DEPLOY/$(dirname $FILE)"
   cp "$FILE" "$DEPLOY/$FILE"
 done
-echo "pbctf{flag1}" > "$DEPLOY/flag1.txt"
-echo "pbctf{flag2_part1" > "$DEPLOY/flag2.1.txt"
+echo "bwctf{flag1}" > "$DEPLOY/flag1.txt"
+echo "bwctf{flag2_part1" > "$DEPLOY/flag2.1.txt"
 echo "_part2}" > "$DEPLOY/flag2.2.txt"
 tar -acvf handout.tar.gz "$DEPLOY"
 
