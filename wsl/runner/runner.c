@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
       int res = waitpid(child, &wstatus, 0);
       int prev_err = errno;
       CHK(killpg, child, SIGKILL);
-      if (res < 0) {
+      if (res != ECHILD) {
         errx(1, "waitpid failed: %s", strerror(prev_err));
       }
       exit(0);
