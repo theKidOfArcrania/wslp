@@ -54,6 +54,7 @@ macro_rules! file_def {
 
 file_def! {
     get_flag1 => "flag1.txt";
+    get_passwd => "passwd.txt";
     //get_flag2 => "flag2.txt";
 }
 

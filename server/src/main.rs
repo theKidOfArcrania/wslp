@@ -9,7 +9,6 @@ use std::{
     env::set_current_dir,
     future::Future,
     net::SocketAddr,
-    path::Path,
     sync::Arc,
     task::Poll,
 };
@@ -38,9 +37,18 @@ pub mod wmi_ext;
 
 #[derive(Parser)]
 struct Arguments {
+    #[clap(long, short, required = true)]
+    /// Config file for logging
+    log_config: String,
+
     /// Don't copy the vhdx file.
     #[clap(long)]
     no_copy: bool,
+
+    /// Use a $ notation to deconflict names to ensure the file name is unique.
+    /// Only is meaningful when used in conjunction with no_copy.
+    #[clap(long)]
+    dollar_deconflict: bool,
 
     #[clap(long, short = 'f', required = true)]
     /// The vhdx file corresponding to the SKU that should be used for each
@@ -87,6 +95,8 @@ impl SharedSockets {
             }
 
             let list = net::TcpListener::bind(("0.0.0.0", 0)).await?;
+            let addr = list.local_addr()?;
+            log::info!("VM 0x{their_key:032x} listening on {addr}");
             self.socks.insert(their_key, list);
         }
         Ok(())
@@ -111,13 +121,11 @@ impl Future for SharedSocketsAccept<'_> {
 
 async fn partition_vm(
     name: String,
-    vhd_src: &Path,
+    mut vhd_src: String,
     shared: bool,
     no_copy: bool,
+    dollar_deconflict: bool,
 ) -> anyhow::Result<(u128, vmm::Vm)> {
-    if !vhd_src.ends_with(".vhdx") {
-        anyhow::bail!("VHD should end in .vhdx");
-    }
     let vhd_path = format!("{name}/disk.vhdx");
 
     let created_key = Arc::new(Mutex::new(None));
@@ -125,6 +133,11 @@ async fn partition_vm(
         async {
             fs::create_dir(&name).await?;
             let vhd_path = if no_copy {
+                if dollar_deconflict {
+                    // XXX: this must end in a .vhdx path otherwise hyper-v mgmt
+                    // tools would not like it.
+                    vhd_src = format!("{vhd_src}${name}.vhdx");
+                }
                 vhd_src
             } else {
                 log::info!("VM {name}: Copying base files");
@@ -132,8 +145,14 @@ async fn partition_vm(
                 if utils::interrupted() {
                     anyhow::bail!("VM {name}: Interrupted while copying files!");
                 }
-                vhd_path.as_ref()
+                vhd_path
             };
+
+            // Ensure that the file can be opened
+            log::info!("Verifying that '{vhd_path}' can be opened.");
+            let mut f = fs::File::open(&vhd_path).await?;
+            f.shutdown().await?;
+            drop(f);
 
             let key = sess::VM_SESS_MGR.register_new(shared).await;
             log::info!("VM {name}: Registered VM -> 0x{key:032x}");
@@ -146,12 +165,7 @@ async fn partition_vm(
                 .name(name.clone())
                 .use_gen2()
                 .memory_startup_bytes("1GB".into())
-                .existing_vhd(
-                    vhd_path
-                        .to_str()
-                        .ok_or_else(|| anyhow!("VM {name}: not a valid VHD path"))?
-                        .into(),
-                )
+                .existing_vhd(vhd_path)
                 .path(format!("{name}/vm"))
                 .boot_device(vmm::BootDevice::VHD)
                 .build()
@@ -250,8 +264,9 @@ async fn client_main(
     difficulty: u32,
     client: &mut net::TcpStream,
     caddr: SocketAddr,
-    vhd_src: &Path,
+    vhd_src: &str,
     no_copy: bool,
+    dollar_deconflict: bool,
 ) -> anyhow::Result<()> {
     let (read, write) = client.split();
     let mut client = utils::RW::new(io::BufReader::new(read), io::BufWriter::new(write));
@@ -307,7 +322,7 @@ async fn client_main(
     log::info!("{caddr}: Partitioning new instance: {vm_name}");
 
     let vm_ctx = format!("VM {vm_name}");
-    let (key, vm) = partition_vm(vm_name, vhd_src, is_admin, no_copy).await?;
+    let (key, vm) = partition_vm(vm_name, vhd_src.into(), is_admin, no_copy, dollar_deconflict).await?;
     utils::try_finally(
         async {
             log::info!("{vm_ctx}: Starting VM...");
@@ -322,7 +337,7 @@ async fn client_main(
                 vm.wait_for_login().await?;
 
                 log::info!("{vm_ctx}: Inputing credentials");
-                vm.input_credentials("user").await?;
+                vm.input_credentials(utils::get_passwd()?).await?;
 
                 log::info!("{vm_ctx}: Opening terminal and running payload");
                 sess::VM_SESS_MGR.connect_server_peer(&key).await?;
@@ -349,17 +364,21 @@ async fn client_main(
                     let line = client
                         .recvline()
                         .interruptable(&vm_ctx, "waiting for client line")
-                        .await??;
+                        .await??
+                        .trim();
+                    log::debug!("{vm_ctx}: we wrote {line}");
                     if line == "done" {
                         log::info!("{vm_ctx}: Disconnecting multi-connect instance!");
                         break;
                     }
                 }
-                sess::VM_SESS_MGR.unregister(&key).await?;
             } else {
                 log::info!("{vm_ctx}: Reading for single-connect instance!");
                 connect_vm(&key, caddr, client).await?;
             }
+
+            log::info!("{vm_ctx}: Performing cleanup");
+            sess::VM_SESS_MGR.unregister(&key).await?;
 
             Ok(())
         },
@@ -434,6 +453,7 @@ where
                     &buffer[0..read]
                 );
                 client.write.write(&buffer[0..read]).await?;
+                client.write.flush().await?;
             }
         } else {
             if read == 0 {
@@ -445,6 +465,7 @@ where
                     &buffer2[0..read]
                 );
                 vm_conn.write(&buffer2[0..read]).await?;
+                vm_conn.flush().await?;
             }
         }
     }
@@ -488,14 +509,24 @@ async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyho
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Arguments::parse();
+    if !args.vhdx_file.ends_with("vhdx") {
+        anyhow::bail!("VHD should end in .vhdx");
+    }
+
+    log4rs::init_file(args.log_config, Default::default()).unwrap();
+    utils::init();
+
     let vhd_name = args.vhdx_file.clone();
-    let vhd_src = std::fs::canonicalize(args.vhdx_file)?;
+    //let vhd_src = std::fs::canonicalize(args.vhdx_file)?;
+    let vhd_src = args.vhdx_file;
     if let Some(vm_path) = args.vm_path {
         set_current_dir(vm_path)?;
     }
 
-    env_logger::init();
-    utils::init();
+    log::info!("Checking for flag1.txt");
+    utils::get_flag1()?;
+    log::info!("Checking for passwd.txt");
+    utils::get_passwd()?;
 
     let conn_sock = net::TcpListener::bind(("0.0.0.0", HOST_PORT_ENTRY)).await?;
     let mut shared = SharedSockets::default();
@@ -584,7 +615,7 @@ exit 0
                 let (mut client, addr) = val?;
                 log::info!("Connected client: {addr}");
                 joins.spawn(async move {
-                    match client_main(args.difficulty, &mut client, addr, &vhd_src, args.no_copy).await {
+                    match client_main(args.difficulty, &mut client, addr, &vhd_src, args.no_copy, args.dollar_deconflict).await {
                         Ok(()) => {}
                         Err(e) => {
                             log::error!("client_main({addr}): {e}\n{}", e.backtrace());

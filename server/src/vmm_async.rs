@@ -1,4 +1,4 @@
-use cgmath::{MetricSpace, Vector2, Vector3, Zero};
+use cgmath::{InnerSpace, MetricSpace, Vector2, Vector3, Zero};
 use std::{
     collections::VecDeque,
     sync::{
@@ -14,18 +14,13 @@ use tokio::{
 
 use crate::{sess, utils, vmm, wmi_ext};
 
-// TODO: we need to change this to be matching the profile pic which is more
-// stable regardless of the theme that is being used
-const COLOR_LOGIN: Vector3<f32> = Vector3::new(0.0, 0.11, 0.533);
-const COLOR_LOGIN2: Vector3<f32> = Vector3::new(0.031, 0.169, 0.788);
 const COLOR_LOGIN_FIELD: Vector3<f32> = Vector3::new(0.094, 0.11, 0.22);
-const COLOR_TERM: Vector3<f32> = Vector3::new(0.031, 0.047, 0.031);
 const COLOR_TASKBAR: Vector3<f32> = Vector3::new(0.91, 0.925, 0.91);
 const COLOR_WINRUN: Vector3<f32> = Vector3::new(0.941, 0.941, 0.941);
 
-const LOGIN_X: usize = 40;
-const LOGIN_Y: usize = 13;
-const LOGIN_SZ: usize = 5;
+const LOGIN_X: usize = 50;
+const LOGIN_Y: usize = 34;
+const LOGIN_SZ: usize = 2;
 const LOGIN_FIELD_X: usize = 50;
 const LOGIN_FIELD_Y: usize = 54;
 const TASKBAR_TOP: usize = 83;
@@ -190,6 +185,7 @@ impl KeyboardJobSet {
                     }
                 };
 
+                log::debug!("VM {}: Performing keyboard job: {:?}", vm.name(), job.tp);
                 let _ = match &job.tp {
                     KeyboardJobType::TypeCtrlAltDel() => kb.type_ctrl_alt_del(),
                     KeyboardJobType::TypeText(msg) => kb.type_text(msg.clone()),
@@ -219,6 +215,7 @@ impl KeyboardJobSet {
     pub async fn submit_job(&self, job: KeyboardJobType) -> anyhow::Result<()> {
         let job = KeyboardJob::new(job);
         let join = self.join.clone();
+        log::debug!("Submitting keyboard job: {:?}", job.tp);
         self.state.jobs.lock().unwrap().push_back(job.clone());
         self.state.job_notify.notify_one();
         tokio::select! {
@@ -277,12 +274,26 @@ impl vmm::Vm {
     }
 
     pub async fn wait_for_login(&self) -> anyhow::Result<()> {
-        self.wait_for_region_set(
-            Vector2::new(LOGIN_X, LOGIN_Y),
-            Vector2::new(LOGIN_SZ, LOGIN_SZ),
-            vec![COLOR_LOGIN, COLOR_LOGIN2],
-        )
-        .await?;
+        let kb = self.get_keyboard_async().await?;
+        loop {
+            kb.press_key(0x0b).await?; // VK_CONTROL
+
+            let color = region_color(
+                self.get_vssd_path()?,
+                100,
+                100,
+                Vector2::new(LOGIN_X, LOGIN_Y),
+                Vector2::new(LOGIN_SZ, LOGIN_SZ),
+            )?;
+            if let Some(color) = color {
+                if color.magnitude() > 0.7 {
+                    break;
+                }
+            }
+
+            time::sleep(time::Duration::from_secs_f32(0.5)).await;
+        }
+        kb.stop().await?;
         Ok(())
     }
 
@@ -313,8 +324,9 @@ impl vmm::Vm {
     }
 
     pub async fn start_wsl(&self, conn: &sess::MultiplexAddr) -> anyhow::Result<()> {
-        log::info!("VM {}: Launching runner", self.name());
         let kb = self.get_keyboard_async().await?;
+
+        log::info!("VM {}: Launching runner", self.name());
         kb.press_key(0x5B).await?; // VK_LWIN
         kb.press_key(0x52).await?; // R
         time::sleep(time::Duration::from_secs(3)).await;
@@ -336,14 +348,6 @@ impl vmm::Vm {
         time::sleep(time::Duration::from_secs(3)).await;
         kb.press_key(0xD).await?; // VK_RETURN
         kb.stop().await?;
-
-        log::info!("VM {}: Waiting for terminal", self.name());
-        self.wait_for_region(
-            Vector2::new(WINRUN_X, WINRUN_Y),
-            Vector2::new(1, 1),
-            COLOR_TERM,
-        )
-        .await?;
 
         Ok(())
     }

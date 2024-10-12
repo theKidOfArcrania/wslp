@@ -155,11 +155,11 @@ impl VmBuilder {
         match self.vhd {
             VhdSpec::Existing { path } => {
                 args.push("-VHDPath".into());
-                args.push(path);
+                args.push(escape_arg(&path, false));
             }
             VhdSpec::New { path, size } => {
                 args.push("-NewVHDPath".into());
-                args.push(path);
+                args.push(escape_arg(&path, false));
                 args.push("-NewVHDSizeBytes".into());
                 args.push(size);
             }
@@ -168,7 +168,7 @@ impl VmBuilder {
 
         if let Some(path) = self.path {
             args.push("-Path".into());
-            args.push(path);
+            args.push(escape_arg(&path, false));
         }
 
         if let Some(memory_startup_bytes) = self.memory_startup_bytes {

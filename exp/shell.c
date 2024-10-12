@@ -15,6 +15,8 @@
 #include <sys/wait.h>
 #include <sys/reg.h>
 
+#define FSERV_ADDR "FILESERV2"
+
 #define BUF_READ 256
 
 #define CHK(fn, args...) ({ \
@@ -195,7 +197,7 @@ int fserv() {
   memset(&addr, 0, sizeof(addr));
 
   addr.sun_family = AF_UNIX;
-  strcpy(&addr.sun_path[1], "FILESERV");
+  strcpy(&addr.sun_path[1], FSERV_ADDR);
   CHK(bind, sock, (struct sockaddr*)&addr, sizeof(addr));
   CHK(listen, sock, 5);
   for(;;) {
@@ -229,7 +231,7 @@ int exploit(int argc, char **argv) {
   memset(&addr, 0, sizeof(addr));
 
   addr.sun_family = AF_UNIX;
-  strcpy(&addr.sun_path[1], "FILESERV");
+  strcpy(&addr.sun_path[1], FSERV_ADDR);
   CHK(connect, sock, (struct sockaddr*)&addr, sizeof(addr));
 
   file_header hdr;
