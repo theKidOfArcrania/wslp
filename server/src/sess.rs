@@ -117,20 +117,24 @@ impl VmSessionsMgr {
         drop(sessions);
 
         log::info!(
-            "VM {}: waiting 30 seconds to get everything situated",
+            "VM {}: waiting 10 seconds to get everything situated",
             vm.name()
         );
-        time::sleep(time::Duration::from_secs(30)).await;
+        time::sleep(time::Duration::from_secs(10)).await;
 
         vm.start_wsl(&mpa).await?;
 
         loop {
             let Some(client) = self
                 .wait_for_peer(key, mpa.port)
-                .timed(time::Instant::now() + time::Duration::from_secs(30))
+                .timed(time::Instant::now() + time::Duration::from_secs(20))
                 .await
                 .transpose()?
             else {
+                // XXX: HACK. This shuts down wsl and waits a bit and then
+                // tries to run this command again;
+                vm.restart_wsl().await?;
+                time::sleep(time::Duration::from_secs(5)).await;
                 vm.start_wsl(&mpa).await?;
                 continue;
             };

@@ -8,7 +8,8 @@ idle_elf = open('./idle', 'rb').read()
 init_shell = open('./shell', 'rb').read()
 
 def connect_remote():
-    p = remote('20.83.201.101', 20000)
+    #p = remote('20.83.201.101', 20000)
+    p = remote('44.231.196.160', 20000)
     p.recvuntil(b'./kctf-pow solve ')
 
     pow = str(p.recvline().strip(), 'utf8')
@@ -16,13 +17,14 @@ def connect_remote():
     p.sendline(result.strip())
 
     p.recvuntil(b'Flag from part 1: ')
-    #p.sendline(open('../flag1.txt', 'rb').read().strip())
-    p.sendline(b"ADMIN_ADMIN!!!!_6G93ugsoi;jsjfaie")
+    p.sendline(open('../flag1.txt', 'rb').read().strip())
+    #p.sendline(b"ADMIN_ADMIN!!!!_6G93ugsoi;jsjfaie")
+    for i in range(3):
+        log.info(str(p.recvline(), 'utf8').strip())
     return p
 
-#p = remote('10.69.0.1', 20000)
-p = remote('20.83.201.101', 58031)
-#p = connect_remote()
+#p = remote('20.83.201.101', 58031)
+p = connect_remote()
 #p.interactive()
 
 def sandbox(elf):

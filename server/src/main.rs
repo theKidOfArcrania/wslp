@@ -179,7 +179,7 @@ async fn partition_vm(
                 .set(&vmm::attrs::AutomaticCheckpointsEnabled, PSBool(false))
                 .set(&vmm::attrs::AutomaticStartAction, StartAction::Nothing)
                 .set(&vmm::attrs::AutomaticStopAction, StopAction::TurnOff)
-                .set(&vmm::attrs::ProcessorCount, 1)
+                .set(&vmm::attrs::ProcessorCount, 4)
                 .set(&vmm::attrs::ExposeVirtualizationExtensions, PSBool(true))
                 .set(&vmm::attrs::EnableSecureBoot, PSState::On)
                 .commit()

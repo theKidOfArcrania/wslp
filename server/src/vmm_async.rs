@@ -323,6 +323,34 @@ impl vmm::Vm {
         Ok(())
     }
 
+    pub async fn restart_wsl(&self) -> anyhow::Result<()> {
+        let kb = self.get_keyboard_async().await?;
+
+        log::info!("VM {}: Launching runner", self.name());
+        kb.press_key(0x5B).await?; // VK_LWIN
+        kb.press_key(0x52).await?; // R
+        time::sleep(time::Duration::from_secs(3)).await;
+
+        kb.release_key(0x5B).await?; // VK_LWIN
+        kb.release_key(0x52).await?; // R
+
+        self.wait_for_region(
+            Vector2::new(WINRUN_X, WINRUN_Y),
+            Vector2::new(1, 1),
+            COLOR_WINRUN,
+        )
+        .await?;
+
+        log::info!("VM {}: Restarting wsl", self.name());
+        kb.type_text(format!("wsl --shutdown")).await?;
+
+        time::sleep(time::Duration::from_secs(3)).await;
+        kb.press_key(0xD).await?; // VK_RETURN
+        kb.stop().await?;
+
+        Ok(())
+    }
+
     pub async fn start_wsl(&self, conn: &sess::MultiplexAddr) -> anyhow::Result<()> {
         let kb = self.get_keyboard_async().await?;
 
