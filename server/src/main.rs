@@ -4,6 +4,7 @@
 
 use anyhow::anyhow;
 use clap::Parser;
+use socket2::TcpKeepalive;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env::set_current_dir,
@@ -37,6 +38,10 @@ pub mod wmi_ext;
 
 #[derive(Parser)]
 struct Arguments {
+    #[clap(long, short = 'p', default_value_t = 50205)]
+    /// Initial port number to listen on
+    initial_port: u16,
+
     #[clap(long, short, required = true)]
     /// Config file for logging
     log_config: String,
@@ -77,7 +82,7 @@ impl SharedSockets {
         SharedSocketsAccept(self)
     }
 
-    async fn update(&mut self) -> anyhow::Result<()> {
+    async fn update(&mut self, next_port: &mut u16) -> anyhow::Result<()> {
         let shared = sess::VM_SESS_MGR.shared_vms().await;
         let our_shared: BTreeSet<u128> = self.socks.keys().copied().collect();
 
@@ -94,7 +99,8 @@ impl SharedSockets {
                 continue;
             }
 
-            let list = net::TcpListener::bind(("0.0.0.0", 0)).await?;
+            let list = net::TcpListener::bind(("0.0.0.0", *next_port)).await?;
+            *next_port += 1;
             let addr = list.local_addr()?;
             log::info!("VM 0x{their_key:032x} listening on {addr}");
             self.socks.insert(their_key, list);
@@ -268,6 +274,8 @@ async fn client_main(
     no_copy: bool,
     dollar_deconflict: bool,
 ) -> anyhow::Result<()> {
+    set_keepalive(client)?;
+
     let (read, write) = client.split();
     let mut client = utils::RW::new(io::BufReader::new(read), io::BufWriter::new(write));
 
@@ -471,11 +479,21 @@ where
     }
 }
 
+fn set_keepalive(sock: &net::TcpStream) -> io::Result<()> {
+    let sref = socket2::SockRef::from(sock);
+    let ka = TcpKeepalive::new()
+        .with_time(time::Duration::from_secs(10))
+        .with_interval(time::Duration::from_secs(10));
+    sref.set_tcp_keepalive(&ka)
+}
+
 async fn shared_main(
     client: &mut net::TcpStream,
     caddr: SocketAddr,
     key: &u128,
 ) -> anyhow::Result<()> {
+    set_keepalive(client)?;
+
     let (read, write) = client.split();
     let client = utils::RW::new(io::BufReader::new(read), io::BufWriter::new(write));
     connect_vm(key, caddr, client).await?;
@@ -483,6 +501,8 @@ async fn shared_main(
 }
 
 async fn multiplex_main(mut client: net::TcpStream, caddr: &SocketAddr) -> anyhow::Result<()> {
+    set_keepalive(&client)?;
+
     let timeout = time::Instant::now() + time::Duration::from_secs(60);
     let mut port_data = sess::MultiplexAddr::default();
 
@@ -590,9 +610,10 @@ exit 0
 
     let multiplex_sock = net::TcpListener::bind((HOST_IP, HOST_PORT_MULTIPLEX)).await?;
     let mut joins = JoinSet::new();
+    let mut next_port = args.initial_port;
     joins.spawn(utils::wait_for_interrupt()); // to ensure this never returns None
     loop {
-        match shared.update().await {
+        match shared.update(&mut next_port).await {
             Ok(_) => {}
             Err(e) => log::error!("update_shared_sockets: {e}\n{}", e.backtrace()),
         }

@@ -847,6 +847,7 @@ dependencies = [
  "rand",
  "random_word",
  "serde",
+ "socket2",
  "tokio",
  "windows",
  "wmi",
