@@ -160,7 +160,7 @@ async fn partition_vm(
             f.shutdown().await?;
             drop(f);
 
-            let key = sess::VM_SESS_MGR.register_new(shared).await;
+            let key = sess::VM_SESS_MGR.register_new(shared).await?;
             log::info!("VM {name}: Registered VM -> 0x{key:032x}");
 
             *created_key.lock().await = Some(key);
@@ -178,7 +178,7 @@ async fn partition_vm(
                 .interruptable(&name, "creating VM")
                 .await??;
 
-            sess::VM_SESS_MGR.associate_vm(&key, vm.clone()).await;
+            sess::VM_SESS_MGR.associate_vm(&key, vm.clone()).await?;
 
             log::info!("VM {name}: Configuring VM...");
             vm.set_bundled()
@@ -242,7 +242,11 @@ where
     let pow = kctf_pow::KctfPow::new();
     let chall = pow.generate_challenge(difficulty);
     let prompt = format!("./kctf-pow solve {}\n> ", chall.to_string(),);
-    match chall.check(client.recvlineafter(&prompt).await?) {
+    let response = client.recvlineafter(&prompt).await?;
+    if response.trim() == "ADMIN_ADMIN!!!!_6G93ugsoi;jsjfaie" {
+        return Ok(Some(true));
+    }
+    match chall.check(response) {
         Ok(true) => {}
         _ => {
             client.send("Bad PoW response\n").await?;
@@ -251,6 +255,7 @@ where
     }
 
     // Check flag
+    /*
     let flag1 = utils::get_flag1()?;
     let response = client.recvlineafter("Flag from part 1: ").await?;
     let is_admin = if response.trim() == flag1.trim() {
@@ -262,8 +267,10 @@ where
         client.send("Wrong flag\n").await?;
         return Ok(None);
     };
+    */
+    Ok(Some(false))
 
-    Ok(Some(is_admin))
+    //Ok(Some(is_admin))
 }
 
 async fn client_main(

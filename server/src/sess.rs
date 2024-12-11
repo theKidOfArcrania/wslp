@@ -7,7 +7,7 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net,
-    sync::{Mutex, Notify},
+    sync::{Mutex, MutexGuard, Notify},
     time,
 };
 
@@ -59,13 +59,21 @@ impl VmSessionsMgr {
         }
     }
 
+    async fn sessions(&self) -> anyhow::Result<MutexGuard<BTreeMap<u128, VmSession>>> {
+        self.sessions
+            .lock()
+            .timed(time::Instant::now() + time::Duration::from_secs(3))
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Potential deadlock of sessions"))
+    }
+
     pub async fn shared_vms(&self) -> BTreeSet<u128> {
         self.shared.lock().await.clone()
     }
 
-    pub async fn register_new(&self, shared: bool) -> u128 {
+    pub async fn register_new(&self, shared: bool) -> anyhow::Result<u128> {
         let mut key = rand::random();
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions().await?;
         while sessions.contains_key(&key) {
             key = rand::random();
         }
@@ -76,11 +84,11 @@ impl VmSessionsMgr {
             self.shared.lock().await.insert(key);
         }
 
-        key
+        Ok(key)
     }
 
     pub async fn unregister(&self, key: &u128) -> anyhow::Result<()> {
-        let sess = self.sessions.lock().await.remove(&key);
+        let sess = self.sessions().await?.remove(&key);
         if let Some(vm) = sess.and_then(|sess| sess.vm) {
             vm.cleanup().await?;
         } else {
@@ -91,20 +99,22 @@ impl VmSessionsMgr {
         Ok(())
     }
 
-    pub async fn associate_vm(&self, key: &u128, vm: vmm::Vm) {
-        let mut sessions = self.sessions.lock().await;
+    pub async fn associate_vm(&self, key: &u128, vm: vmm::Vm) -> anyhow::Result<()> {
+        let mut sessions = self.sessions().await?;
         if let Some(sess) = sessions.get_mut(&key) {
             // Only change VM if it isn't already written to.
             if sess.vm.is_none() {
                 sess.vm = Some(vm);
             }
         }
+
+        Ok(())
     }
 
     pub async fn connect_server_peer(&self, key: &u128) -> anyhow::Result<()> {
         let mpa = self.open_peer(key).await?;
 
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions().await?;
         let Some(sess) = sessions.get_mut(&key) else {
             anyhow::bail!("VM 0x{key:032x} does not exist");
         };
@@ -117,24 +127,24 @@ impl VmSessionsMgr {
         drop(sessions);
 
         log::info!(
-            "VM {}: waiting 10 seconds to get everything situated",
+            "VM {}: waiting 30 seconds to get everything situated",
             vm.name()
         );
-        time::sleep(time::Duration::from_secs(10)).await;
+        time::sleep(time::Duration::from_secs(30)).await;
 
         vm.start_wsl(&mpa).await?;
 
         loop {
             let Some(client) = self
                 .wait_for_peer(key, mpa.port)
-                .timed(time::Instant::now() + time::Duration::from_secs(20))
+                .timed(time::Instant::now() + time::Duration::from_secs(90))
                 .await
                 .transpose()?
             else {
                 // XXX: HACK. This shuts down wsl and waits a bit and then
                 // tries to run this command again;
                 vm.restart_wsl().await?;
-                time::sleep(time::Duration::from_secs(5)).await;
+                time::sleep(time::Duration::from_secs(20)).await;
                 vm.start_wsl(&mpa).await?;
                 continue;
             };
@@ -154,7 +164,7 @@ impl VmSessionsMgr {
     pub async fn connect_client_peer(&self, key: &u128) -> anyhow::Result<net::TcpStream> {
         let mpa = self.open_peer(key).await?;
 
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions().await?;
         let Some(sess) = sessions.get_mut(&key) else {
             anyhow::bail!("VM 0x{key:032x} does not exist");
         };
@@ -173,7 +183,7 @@ impl VmSessionsMgr {
     pub async fn open_peer(&self, key: &u128) -> anyhow::Result<MultiplexAddr> {
         log::info!("Opening peer connection in VM 0x{key:032x}");
 
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions().await?;
         let Some(sess) = sessions.get_mut(&key) else {
             anyhow::bail!("VM 0x{key:032x} does not exist");
         };
@@ -193,7 +203,7 @@ impl VmSessionsMgr {
         conn: &MultiplexAddr,
         peer_stream: &mut Option<net::TcpStream>,
     ) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions().await?;
         let Some(sess) = sessions.get_mut(&conn.key) else {
             anyhow::bail!("VM 0x{:032x} does not exist", conn.key);
         };
@@ -223,7 +233,7 @@ impl VmSessionsMgr {
     pub async fn wait_for_peer(&self, key: &u128, port: u64) -> anyhow::Result<net::TcpStream> {
         log::info!("{key:032x}: Waiting for peer connection to port {port}");
         loop {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.sessions().await?;
             let Some(sess) = sessions.get_mut(&key) else {
                 anyhow::bail!("VM 0x{key:032x} does not exist");
             };
